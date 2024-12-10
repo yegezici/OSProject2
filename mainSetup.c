@@ -6,139 +6,150 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
-#define MAX_LINE 80 /* Maximum command line length */
-#define HISTORY_SIZE 10 /* Command history size */
+#define MAX_LINE 80 /* 80 chars per line, per command, should be enough. */
+#define MAX_HISTORY 10
+#define MAX_BG_PROCESSES 20
 
-/* Parses the input into arguments */
 void setup(char inputBuffer[], char *args[], int *background) {
     int length, start = -1, ct = 0;
+    *background = 0;
 
-    *background = 0; /* Reset background flag */
-
-    /* Read input from the user */
     length = read(STDIN_FILENO, inputBuffer, MAX_LINE);
 
-    if (length == 0) exit(0); /* Exit on Ctrl+D */
-
-    if ((length < 0) && (errno != EINTR)) {
+    if (length == 0) exit(0); // End of user input (Ctrl+D)
+    if (length < 0 && errno != EINTR) {
         perror("Error reading the command");
         exit(-1);
     }
 
-    /* Parse input into arguments */
     for (int i = 0; i < length; i++) {
         switch (inputBuffer[i]) {
             case ' ':
             case '\t':
                 if (start != -1) {
                     args[ct++] = &inputBuffer[start];
-                    inputBuffer[i] = '\0'; /* Null-terminate the string */
+                    inputBuffer[i] = '\0';
                     start = -1;
                 }
                 break;
-
             case '\n':
                 if (start != -1) {
                     args[ct++] = &inputBuffer[start];
                 }
                 inputBuffer[i] = '\0';
-                args[ct] = NULL; /* Null-terminate the args array */
+                args[ct] = NULL;
                 break;
-
+            case '&':
+                *background = 1;
+                inputBuffer[i] = '\0';
+                break;
             default:
                 if (start == -1) start = i;
-                if (inputBuffer[i] == '&') {
-                    *background = 1; /* Set background flag */
-                    inputBuffer[i] = '\0';
-                }
-                break;
         }
     }
-
     args[ct] = NULL;
-
-    if (ct == 0) args[0] = NULL; /* Handle empty input */
 }
 
-/* Adds a command to the history */
-void addHistory(char inputBuffer[], char historyBuffer[HISTORY_SIZE][MAX_LINE]) {
-    if (strlen(inputBuffer) == 0) return; /* Ignore empty commands */
-
-    /* Shift history entries */
-    for (int i = HISTORY_SIZE - 1; i > 0; i--) {
+void addToHistory(char inputBuffer[], char historyBuffer[MAX_HISTORY][MAX_LINE]) {
+    for (int i = MAX_HISTORY - 1; i > 0; i--) {
         strncpy(historyBuffer[i], historyBuffer[i - 1], MAX_LINE);
     }
-
-    /* Add new command to history */
     strncpy(historyBuffer[0], inputBuffer, MAX_LINE);
 }
 
-/* Prints the command history */
-void printHistory(char historyBuffer[HISTORY_SIZE][MAX_LINE]) {
-    for (int i = 0; i < HISTORY_SIZE; i++) {
-        if (strlen(historyBuffer[i]) > 0) {
+void printHistory(char historyBuffer[MAX_HISTORY][MAX_LINE]) {
+    for (int i = 0; i < MAX_HISTORY; i++) {
+        if (historyBuffer[i][0] != '\0') {
             printf("%d. %s\n", i, historyBuffer[i]);
         }
     }
 }
 
+void moveToForeground(pid_t pid, pid_t bgProcesses[MAX_BG_PROCESSES], int *bgCount) {
+    int found = 0;
+    for (int i = 0; i < *bgCount; i++) {
+        if (bgProcesses[i] == pid) {
+            found = 1;
+            waitpid(pid, NULL, 0); // Move to foreground and wait for it to finish
+            for (int j = i; j < *bgCount - 1; j++) {
+                bgProcesses[j] = bgProcesses[j + 1];
+            }
+            (*bgCount)--;
+            break;
+        }
+    }
+    if (!found) {
+        printf("Process with PID %d not found in background processes.\n", pid);
+    }
+}
+
 int main(void) {
-    char inputBuffer[MAX_LINE]; /* Buffer for the command */
-    char historyBuffer[HISTORY_SIZE][MAX_LINE] = {0}; /* Command history */
-    char *args[MAX_LINE / 2 + 1]; /* Argument array */
-    int background; /* Background process flag */
+    char inputBuffer[MAX_LINE];
+    char historyBuffer[MAX_HISTORY][MAX_LINE] = {0};
+    int background;
+    char *args[MAX_LINE / 2 + 1];
+    pid_t bgProcesses[MAX_BG_PROCESSES];
+    int bgCount = 0;
 
     while (1) {
-        background = 0;
-
         printf("myshell: ");
         fflush(stdout);
 
-        /* Parse input */
         setup(inputBuffer, args, &background);
+        if (args[0] == NULL) continue; // Ignore empty input
 
-        if (args[0] == NULL) continue; /* Ignore empty commands */
-
-        /* Add command to history */
-        addHistory(inputBuffer, historyBuffer);
-
-        /* Handle "history" command */
         if (strcmp(args[0], "history") == 0) {
-            printHistory(historyBuffer);
+            if (args[1] == NULL) {
+                printHistory(historyBuffer);
+            } else {
+                int index = atoi(args[1]);
+                if (index >= 0 && index < MAX_HISTORY && historyBuffer[index][0] != '\0') {
+                    strncpy(inputBuffer, historyBuffer[index], MAX_LINE);
+                    setup(inputBuffer, args, &background);
+                } else {
+                    printf("Invalid history index.\n");
+                }
+            }
             continue;
         }
 
-        /* Handle "history [index]" command */
-        if (strcmp(args[0], "!" ) == 0 && args[1] != NULL) {
-            int index = atoi(args[1]);
-
-            if (index >= 0 && index < HISTORY_SIZE && strlen(historyBuffer[index]) > 0) {
-                /* Re-run the command at the specified index */
-                strncpy(inputBuffer, historyBuffer[index], MAX_LINE);
-                setup(inputBuffer, args, &background);
+        if (strcmp(args[0], "fg") == 0) {
+            if (args[1] != NULL) {
+                pid_t pid = atoi(args[1]);
+                moveToForeground(pid, bgProcesses, &bgCount);
             } else {
-                printf("Invalid history index!\n");
-                continue;
+                printf("Usage: fg <pid>\n");
             }
+            continue;
         }
 
-        /* Fork and execute the command */
-        pid_t pid = fork();
+        addToHistory(inputBuffer, historyBuffer);
 
+        pid_t pid = fork();
         if (pid < 0) {
             perror("Fork failed");
-        } else if (pid == 0) {
-            /* Child process */
-            execvp(args[0], args);
-            perror("Command not found"); /* If execvp fails */
-            exit(1);
+            continue;
+        }
+
+        if (pid == 0) {
+            // Child process
+            if (execvp(args[0], args) == -1) {
+                perror("Command execution failed");
+                exit(1);
+            }
         } else {
-            /* Parent process */
-            if (!background) {
-                waitpid(pid, NULL, 0); /* Wait for the child to complete */
+            // Parent process
+            if (background) {
+                if (bgCount < MAX_BG_PROCESSES) {
+                    bgProcesses[bgCount++] = pid;
+                    printf("Process %d running in background\n", pid);
+                } else {
+                    printf("Maximum background process limit reached.\n");
+                }
+            } else {
+                waitpid(pid, NULL, 0);
             }
         }
     }
-
     return 0;
 }
