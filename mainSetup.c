@@ -2,172 +2,143 @@
 #include <unistd.h>
 #include <errno.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
- 
-#define MAX_LINE 80 /* 80 chars per line, per command, should be enough. */
- 
-/* The setup function below will not return any value, but it will just: read
-in the next command line; separate it into distinct arguments (using blanks as
-delimiters), and set the args array entries to point to the beginning of what
-will become null-terminated, C-style strings. */
+#define MAX_LINE 80 /* Maximum command line length */
+#define HISTORY_SIZE 10 /* Command history size */
 
-void setup(char inputBuffer[], char *args[],int *background)
-{
-    int length, /* # of characters in the command line */
-        i,      /* loop index for accessing inputBuffer array */
-        start,  /* index where beginning of next command parameter is */
-        ct;     /* index of where to place the next parameter into args[] */
-    
-    ct = 0;
-        
-    /* read what the user enters on the command line */
-    length = read(STDIN_FILENO,inputBuffer,MAX_LINE);  
+/* Parses the input into arguments */
+void setup(char inputBuffer[], char *args[], int *background) {
+    int length, start = -1, ct = 0;
 
-    /* 0 is the system predefined file descriptor for stdin (standard input),
-       which is the user's screen in this case. inputBuffer by itself is the
-       same as &inputBuffer[0], i.e. the starting address of where to store
-       the command that is read, and length holds the number of characters
-       read in. inputBuffer is not a null terminated C-string. */
+    *background = 0; /* Reset background flag */
 
-    start = -1;
-    if (length == 0)
-        exit(0);            /* ^d was entered, end of user command stream */
+    /* Read input from the user */
+    length = read(STDIN_FILENO, inputBuffer, MAX_LINE);
 
-/* the signal interrupted the read system call */
-/* if the process is in the read() system call, read returns -1
-  However, if this occurs, errno is set to EINTR. We can check this  value
-  and disregard the -1 value */
-    if ( (length < 0) && (errno != EINTR) ) {
-        perror("error reading the command");
-	exit(-1);           /* terminate with error code of -1 */
+    if (length == 0) exit(0); /* Exit on Ctrl+D */
+
+    if ((length < 0) && (errno != EINTR)) {
+        perror("Error reading the command");
+        exit(-1);
     }
 
-	printf(">>%s<<",inputBuffer);
-    for (i=0;i<length;i++){ /* examine every character in the inputBuffer */
+    /* Parse input into arguments */
+    for (int i = 0; i < length; i++) {
+        switch (inputBuffer[i]) {
+            case ' ':
+            case '\t':
+                if (start != -1) {
+                    args[ct++] = &inputBuffer[start];
+                    inputBuffer[i] = '\0'; /* Null-terminate the string */
+                    start = -1;
+                }
+                break;
 
-        switch (inputBuffer[i]){
-	    case ' ':
-	    case '\t' :               /* argument separators */
-		if(start != -1){
-                    args[ct] = &inputBuffer[start];    /* set up pointer */
-		    ct++;
-		}
-                inputBuffer[i] = '\0'; /* add a null char; make a C string */
-		start = -1;
-		break;
-
-            case '\n':                 /* should be the final char examined */
-		if (start != -1){
-                    args[ct] = &inputBuffer[start];     
-		    ct++;
-		}
+            case '\n':
+                if (start != -1) {
+                    args[ct++] = &inputBuffer[start];
+                }
                 inputBuffer[i] = '\0';
-                args[ct] = NULL; /* no more arguments to this command */
-		break;
+                args[ct] = NULL; /* Null-terminate the args array */
+                break;
 
-	    default :             /* some other character */
-		if (start == -1)
-		    start = i;
-                if (inputBuffer[i] == '&'){
-		    *background  = 1;
-                    inputBuffer[i-1] = '\0';
-		}
-	} /* end of switch */
-     }    /* end of for */
-     args[ct] = NULL; /* just in case the input line was > 80 */
+            default:
+                if (start == -1) start = i;
+                if (inputBuffer[i] == '&') {
+                    *background = 1; /* Set background flag */
+                    inputBuffer[i] = '\0';
+                }
+                break;
+        }
+    }
 
-	for (i = 0; i <= ct; i++)
-		printf("args %d = %s\n",i,args[i]);
-} /* end of setup routine */
-void history(char inputBuffer[], char historyBuffer[10][MAX_LINE]) {
-    int i;
+    args[ct] = NULL;
 
-    // Kuyruktaki tüm elemanları bir ileri kaydır
-    for (i = 9; i > 0; i--) {
+    if (ct == 0) args[0] = NULL; /* Handle empty input */
+}
+
+/* Adds a command to the history */
+void addHistory(char inputBuffer[], char historyBuffer[HISTORY_SIZE][MAX_LINE]) {
+    if (strlen(inputBuffer) == 0) return; /* Ignore empty commands */
+
+    /* Shift history entries */
+    for (int i = HISTORY_SIZE - 1; i > 0; i--) {
         strncpy(historyBuffer[i], historyBuffer[i - 1], MAX_LINE);
     }
 
-    // Yeni komutu en başa ekle
+    /* Add new command to history */
     strncpy(historyBuffer[0], inputBuffer, MAX_LINE);
 }
 
-void printHistory(char historyBuffer[10][MAX_LINE]){
-    
-    for(int i =0; i < 10 ; i++ ){
-        for(int j = 0 ; j < MAX_LINE ; j++){
-            printf("%d. %s", i, historyBuffer[i][j]);
+/* Prints the command history */
+void printHistory(char historyBuffer[HISTORY_SIZE][MAX_LINE]) {
+    for (int i = 0; i < HISTORY_SIZE; i++) {
+        if (strlen(historyBuffer[i]) > 0) {
+            printf("%d. %s\n", i, historyBuffer[i]);
         }
     }
 }
-int main(void)
-{
-            char inputBuffer[MAX_LINE]; /*buffer to hold command entered */
-            char historyBuffer[10][MAX_LINE];
-            int background; /* equals 1 if a command is followed by '&' */
-            char *args[MAX_LINE/2 + 1]; /*command line arguments */
-            pid_t pid;
-            int historyOrder;
-            while (1){
-                        background = 0;
-                        
-                        printf("myshell: ");
-                        /*setup() calls exit() when Control-D is entered */
-                        
-                        setup(inputBuffer, args, &background);
-                        history(inputBuffer, historyBuffer);
 
-                        if (strcmp(args[0], "history") == 0) {
-                            if (args[1] == NULL) {
-                                // Kullanıcı sadece "history" komutunu girdiğinde
-                                printHistory(historyBuffer);
-                            } else {
-                                // Kullanıcı "history [index]" şeklinde bir komut girdiğinde
-                                int index = atoi(args[1]); // Argümanı integer'a çevir
+int main(void) {
+    char inputBuffer[MAX_LINE]; /* Buffer for the command */
+    char historyBuffer[HISTORY_SIZE][MAX_LINE] = {0}; /* Command history */
+    char *args[MAX_LINE / 2 + 1]; /* Argument array */
+    int background; /* Background process flag */
 
-                                if (index >= 0 && index < 10 && historyBuffer[index][0] != '\0') {
-                                    // Geçerli bir index girilmişse
-                                    char *commandArgs[MAX_LINE / 2 + 1]; // Komutun argümanlarını tutacak
-                                    char command[MAX_LINE];
-                                    strncpy(command, historyBuffer[index], MAX_LINE);
+    while (1) {
+        background = 0;
 
-                                    // Komutu parçalayarak args dizisine yerleştir
-                                    int background = 0; // Arka plan işlemi için
-                                    setup(command, commandArgs, &background);
-                                    history(command,historyBuffer);
-                                    // execv ile komutu çalıştır
-                                    if (fork() == 0) {
-                                        execv(commandArgs[0], commandArgs);
-                                        perror("execv failed");
-                                        exit(1);
-                                    }
-                                    if (background == 0) {
-                                        wait(NULL); // Ön planda çalışıyorsa bekle
-                                    }
-                                } else {
-                                    printf("Invalid history index!\n");
-                                }
-                            }
-                        }
-                        
-                        /**  the steps are:
-                        (1) fork a child process using fork()*/
-                         /*
-                        (2) the child process will invoke execv()*/
-                        pid = fork();
-                        if(pid == 0 ) {
-                            execv(args[0], args);
-                        }
-                        /*(3) if background == 0, the parent will wait,
-                        otherwise it will invoke the setup() function again. */
-                        else if (pid > 0){
-                         if (background == 0)
-                            wait(NULL);
-                        }
-                        else 
-                            setup(inputBuffer, args, &background);
-                        
+        printf("myshell: ");
+        fflush(stdout);
 
+        /* Parse input */
+        setup(inputBuffer, args, &background);
 
-						
+        if (args[0] == NULL) continue; /* Ignore empty commands */
+
+        /* Add command to history */
+        addHistory(inputBuffer, historyBuffer);
+
+        /* Handle "history" command */
+        if (strcmp(args[0], "history") == 0) {
+            printHistory(historyBuffer);
+            continue;
+        }
+
+        /* Handle "history [index]" command */
+        if (strcmp(args[0], "!" ) == 0 && args[1] != NULL) {
+            int index = atoi(args[1]);
+
+            if (index >= 0 && index < HISTORY_SIZE && strlen(historyBuffer[index]) > 0) {
+                /* Re-run the command at the specified index */
+                strncpy(inputBuffer, historyBuffer[index], MAX_LINE);
+                setup(inputBuffer, args, &background);
+            } else {
+                printf("Invalid history index!\n");
+                continue;
             }
+        }
+
+        /* Fork and execute the command */
+        pid_t pid = fork();
+
+        if (pid < 0) {
+            perror("Fork failed");
+        } else if (pid == 0) {
+            /* Child process */
+            execvp(args[0], args);
+            perror("Command not found"); /* If execvp fails */
+            exit(1);
+        } else {
+            /* Parent process */
+            if (!background) {
+                waitpid(pid, NULL, 0); /* Wait for the child to complete */
+            }
+        }
+    }
+
+    return 0;
 }
