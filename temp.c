@@ -7,11 +7,24 @@
 #include <sys/wait.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <signal.h>
+
 
 #define MAX_LINE 80     /* 80 chars per line, per command, should be enough. */
 #define MAX_HISTORY 10
 #define MAX_BG_PROCESSES 20
 
+pid_t fg_pid = -1; 
+void handleSigTSTP(int sig) {
+    if (fg_pid != -1) {
+        printf("\nCaught SIGTSTP (Ctrl+Z). Terminating foreground process %d and its descendants.\n", fg_pid);
+        kill(fg_pid, SIGTERM); // Send SIGTERM to terminate the foreground process
+    } else {
+        printf("\nNo foreground process to terminate.\n");
+        return;
+    }
+   
+}
 void setup(char inputBuffer[], char *args[], int *background) {
     int length, start = -1, ct = 0;
     *background = 0;
@@ -49,6 +62,9 @@ void setup(char inputBuffer[], char *args[], int *background) {
                 if (start == -1) start = i;
         }
     }
+      for (int i = 0; args[i] != NULL; i++) {
+    printf("args[%d]: %s\n", i, args[i]);
+}
     args[ct] = NULL;
 }
 
@@ -66,6 +82,16 @@ void printHistory(char historyBuffer[MAX_HISTORY][MAX_LINE]) {
         }
     }
 }
+
+void terminateProgram(int bgCount){
+    
+    if(bgCount != 0){
+        printf("There are still background process that are still running!");
+        
+    }else
+     exit(1);
+}
+
 
 void moveToForeground(pid_t pid, pid_t bgProcesses[MAX_BG_PROCESSES], int *bgCount) {
     int found = 0;
@@ -184,12 +210,11 @@ int redirect(char *args[], int background) {
     return 1;
 }
 
-void handleSigTSTP(int sig) {
-    printf("\nCaught SIGTSTP (Ctrl+Z). Foreground process will be terminated.\n");
-}
+
 
 int main(void)
 {
+    signal(SIGTSTP, handleSigTSTP);
     char inputBuffer[MAX_LINE];
     char historyBuffer[MAX_HISTORY][MAX_LINE] = {0};
     int background;
@@ -299,7 +324,10 @@ int main(void)
          if (redirect(args, background)) {
             continue;
         }
-
+        if (strcmp(args[0], "exit") == 0){
+            terminateProgram(bgCount);
+            continue;
+        }
         addToHistory(inputBuffer, historyBuffer);
 
         pid_t pid = fork();
@@ -344,7 +372,9 @@ int main(void)
             }
             else
             {
+                fg_pid = pid;
                 waitpid(pid, NULL, 0);
+                fg_pid = -1;
             }
         }
     }
