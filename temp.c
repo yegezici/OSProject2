@@ -5,103 +5,85 @@
 #include <string.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 
-#define MAX_LINE 80 /* 80 chars per line, per command, should be enough. */
+#define MAX_LINE 80     /* 80 chars per line, per command, should be enough. */
 #define MAX_HISTORY 10
 #define MAX_BG_PROCESSES 20
 
-void setup(char inputBuffer[], char *args[], int *background)
-{
+void setup(char inputBuffer[], char *args[], int *background) {
     int length, start = -1, ct = 0;
     *background = 0;
 
     length = read(STDIN_FILENO, inputBuffer, MAX_LINE);
 
-    if (length == 0)
-        exit(0); // End of user input (Ctrl+D)
-    if (length < 0 && errno != EINTR)
-    {
+    if (length == 0) exit(0); // End of user input (Ctrl+D)
+    if (length < 0 && errno != EINTR) {
         perror("Error reading the command");
         exit(-1);
     }
 
-    for (int i = 0; i < length; i++)
-    {
-        switch (inputBuffer[i])
-        {
-        case ' ':
-        case '\t':
-        case '%':
-            if (start != -1)
-            {
-                args[ct++] = &inputBuffer[start];
+    for (int i = 0; i < length; i++) {
+        switch (inputBuffer[i]) {
+            case ' ':
+            case '\t':
+                if (start != -1) {
+                    args[ct++] = &inputBuffer[start];
+                    inputBuffer[i] = '\0';
+                    start = -1;
+                }
+                break;
+            case '\n':
+                if (start != -1) {
+                    args[ct++] = &inputBuffer[start];
+                }
                 inputBuffer[i] = '\0';
-                start = -1;
-            }
-            break;
-        case '\n':
-            if (start != -1)
-            {
-                args[ct++] = &inputBuffer[start];
-            }
-            inputBuffer[i] = '\0';
-            args[ct] = NULL;
-            break;
-        case '&':
-            *background = 1;
-            inputBuffer[i] = '\0';
-            break;
-        default:
-            if (start == -1)
-                start = i;
+                args[ct] = NULL;
+                break;
+            case '&':
+                *background = 1;
+                inputBuffer[i] = '\0';
+                break;
+            default:
+                if (start == -1) start = i;
         }
     }
     args[ct] = NULL;
 }
 
-void addToHistory(char inputBuffer[], char historyBuffer[MAX_HISTORY][MAX_LINE])
-{
-    for (int i = MAX_HISTORY - 1; i > 0; i--)
-    {
+void addToHistory(char inputBuffer[], char historyBuffer[MAX_HISTORY][MAX_LINE]) {
+    for (int i = MAX_HISTORY - 1; i > 0; i--) {
         strncpy(historyBuffer[i], historyBuffer[i - 1], MAX_LINE);
     }
     strncpy(historyBuffer[0], inputBuffer, MAX_LINE);
 }
 
-void printHistory(char historyBuffer[MAX_HISTORY][MAX_LINE])
-{
-    for (int i = 0; i < MAX_HISTORY; i++)
-    {
-        if (historyBuffer[i][0] != '\0')
-        {
+void printHistory(char historyBuffer[MAX_HISTORY][MAX_LINE]) {
+    for (int i = 0; i < MAX_HISTORY; i++) {
+        if (historyBuffer[i][0] != '\0') {
             printf("%d. %s\n", i, historyBuffer[i]);
         }
     }
 }
 
-void moveToForeground(pid_t pid, pid_t bgProcesses[MAX_BG_PROCESSES], int *bgCount)
-{
+void moveToForeground(pid_t pid, pid_t bgProcesses[MAX_BG_PROCESSES], int *bgCount) {
     int found = 0;
-    for (int i = 0; i < *bgCount; i++)
-    {
-        if (bgProcesses[i] == pid)
-        {
+    for (int i = 0; i < *bgCount; i++) {
+        if (bgProcesses[i] == pid) {
             found = 1;
             waitpid(pid, NULL, 0); // Move to foreground and wait for it to finish
-            for (int j = i; j < *bgCount - 1; j++)
-            {
+            for (int j = i; j < *bgCount - 1; j++) {
                 bgProcesses[j] = bgProcesses[j + 1];
             }
             (*bgCount)--;
             break;
         }
     }
-    if (!found)
-    {
+    if (!found) {
         printf("Process with PID %d not found in background processes.\n", pid);
     }
 }
-
 void findCommandPath(const char *command, char *fullPath)
 {
     char *pathEnv = getenv("PATH");
@@ -177,31 +159,20 @@ int redirect(char *args[], int background) {
             args[i] = NULL;
             dup2(fd, STDERR_FILENO);
             close(fd);
-        } else if(strcmp("<", args[i]) == 0){
-            if(args[i+2]!= NULL && strcmp(">", args[i+2]) == 0){
-                fflush(stdout);
-                if(args[i+3] == NULL){
-                    fprintf(stdout, "Missing argument!\n");
-                    return 0;
-                }
-                int fd, fd2;
-                fd = open(args[i+1], O_RDONLY, 0644);
-                fd2 = open(args[i+3],O_WRONLY | O_TRUNC | O_CREAT, 0644);
-                dup2(fd2, STDOUT_FILENO);
-                dup2(fd, STDIN_FILENO);
-                close(fd2);
-                args[i]=NULL;
-            }else{
-                int fd;
-                args[i]=NULL;
-                fd = open(args[i+1], O_RDONLY, 0644);
-                dup2(fd, STDIN_FILENO);
-                close(fd);
-       }
-       }
-        
+        } else if (strcmp("<", args[i]) == 0) {
+            int fd = open(args[i + 1], O_RDONLY);
+            if (fd < 0) {
+                perror("Error opening file");
+                exit(1);
+            }
+            args[i] = NULL;
+            dup2(fd, STDIN_FILENO);
+            close(fd);
+        }
+        char fullPath[MAX_LINE] = {0};
+            findCommandPath(args[0], fullPath);
 
-        if (execvp(args[0], args) == -1) {
+        if (execv(fullPath, args) == -1) {
             perror("Command execution failed");
             exit(1);
         }
@@ -213,6 +184,9 @@ int redirect(char *args[], int background) {
     return 1;
 }
 
+void handleSigTSTP(int sig) {
+    printf("\nCaught SIGTSTP (Ctrl+Z). Foreground process will be terminated.\n");
+}
 
 int main(void)
 {
@@ -320,6 +294,9 @@ int main(void)
             {
                 printf("Usage: fg <pid>\n");
             }
+            continue;
+        }
+         if (redirect(args, background)) {
             continue;
         }
 
