@@ -14,12 +14,14 @@
 #define MAX_BG_PROCESSES 20
 
 pid_t fg_pid = -1;
-
+pid_t bgProcesses[MAX_BG_PROCESSES];
+int bgCount = 0;
 void handleSigTSTP(int sig);
+void handleSigCHLD(int sig);
 void setup(char inputBuffer[], char *args[], int *background);
 void findCommandPath(const char *command, char *fullPath);
 void executeFromHistory(char *historyLine, char *args[]);
-void addToHistory(char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE]);
+void addToHistory(char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE], int background);
 void printHistory(char historyBuffer[MAX_HISTORY][MAX_LINE]);
 void moveToForeground(pid_t pid, pid_t bgProcesses[MAX_BG_PROCESSES], int *bgCount);
 void executePipedCommands(char *args[], char *inputBuffer);
@@ -29,12 +31,11 @@ int redirect(char *args[], int background);
 int main(void)
 {
     signal(SIGTSTP, handleSigTSTP);
+    signal(SIGCHLD, handleSigCHLD); // Register signal handler for SIGCHLD
     char inputBuffer[MAX_LINE];
     char historyBuffer[MAX_HISTORY][MAX_LINE] = {0};
     int background;
     char *args[MAX_LINE / 2 + 1];
-    pid_t bgProcesses[MAX_BG_PROCESSES];
-    int bgCount = 0;
 
     while (1)
     {
@@ -59,13 +60,13 @@ int main(void)
 
         if (hasPipe)
         {
-            addToHistory(args, historyBuffer);
+            addToHistory(args, historyBuffer, background);
             executePipedCommands(args, inputBuffer);
             continue;
         }
         if (redirect(args, background))
         {
-            addToHistory(args, historyBuffer);
+            addToHistory(args, historyBuffer, background);
             continue;
         }
         if (strcmp(args[0], "exit") == 0)
@@ -107,12 +108,12 @@ int main(void)
                     }
                     else
                     {
-                        fprintf(stderr, "Error: No such history entry.\n");
+                        printf("Error: No such history entry.\n");
                     }
                 }
                 else
                 {
-                    fprintf(stderr, "Error: Invalid history index.\n");
+                    printf("Error: Invalid history index.\n");
                 }
             }
             continue;
@@ -131,7 +132,7 @@ int main(void)
 
                 char fgIndex[MAX_LINE];
                 int i;
-                for (i = 0; args[1][i] != '\0'; i++)
+                for (i = 1; args[1][i] != '\0'; i++) // Start from 1 to skip '%'
                 {
                     fgIndex[i - 1] = args[1][i];
                 }
@@ -149,13 +150,13 @@ int main(void)
         // Add to history
         for (int i = 0; args[i] != NULL; i++)
             printf("args[%d]: %s\n", i, args[i]);
-        addToHistory(args, historyBuffer);
+        addToHistory(args, historyBuffer, background);
 
         // Execute command
         pid_t pid = fork();
         if (pid < 0)
         {
-            fprintf(stderr, "Fork failed\n");
+            perror("Fork failed");
             continue;
         }
 
@@ -173,7 +174,7 @@ int main(void)
 
             if (execv(fullPath, args) == -1)
             {
-                fprintf(stderr, "Command execution failed\n");
+                perror("Command execution failed");
                 exit(1);
             }
         }
@@ -194,7 +195,9 @@ int main(void)
             }
             else
             {
+                fg_pid = pid; // Store the foreground process PID
                 waitpid(pid, NULL, 0);
+                fg_pid = -1; // Reset the foreground process PID
             }
         }
     }
@@ -253,7 +256,7 @@ void findCommandPath(const char *command, char *fullPath)
     char *pathEnv = getenv("PATH");
     if (!pathEnv)
     {
-        fprintf(stderr, "PATH environment variable not found\n");
+        perror("PATH environment variable not found");
         exit(1);
     }
 
@@ -272,7 +275,9 @@ void findCommandPath(const char *command, char *fullPath)
 }
 void executeFromHistory(char *historyLine, char *args[])
 {
-
+    for (int i = 0; args[i] != NULL; i++)
+        printf("history: args[%d]: %s\n", i, args[i]);
+    printf("historyLine: %s\n", historyLine);
     int background = 0;
     int ct = 0, start = -1;
 
@@ -317,7 +322,7 @@ void executeFromHistory(char *historyLine, char *args[])
     // If no valid command, return
     if (args[0] == NULL)
     {
-        fprintf(stderr, "Error: Invalid command in history.\n");
+        printf("Error: Invalid command in history.\n");
         return;
     }
     int hasPipe = 0;
@@ -345,7 +350,7 @@ void executeFromHistory(char *historyLine, char *args[])
     pid_t pid = fork();
     if (pid < 0)
     {
-        fprintf(stderr, "Fork failed\n");
+        perror("Fork failed");
         return;
     }
 
@@ -363,7 +368,7 @@ void executeFromHistory(char *historyLine, char *args[])
 
         if (execv(fullPath, args) == -1)
         {
-            fprintf(stderr, "Command execution failed\n");
+            perror("Command execution failed");
             exit(1);
         }
     }
@@ -382,7 +387,7 @@ void executeFromHistory(char *historyLine, char *args[])
     }
 }
 
-void addToHistory(char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE])
+void addToHistory(char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE], int background)
 {
     char inputBuffer[MAX_LINE] = {0};
     int index = 0;
@@ -393,11 +398,15 @@ void addToHistory(char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE])
         // Add the argument to inputBuffer
         strcat(inputBuffer, args[i]);
 
-        // Add a space between arguments (except for the last one)
+        // Add a space between arguments
         if (args[i] != NULL)
         {
             strcat(inputBuffer, " ");
         }
+    }
+    if (background)
+    {
+        strcat(inputBuffer, "& ");
     }
     // Shift history to make space for the new command
     for (int i = MAX_HISTORY - 1; i > 0; i--)
@@ -428,7 +437,9 @@ void moveToForeground(pid_t pid, pid_t bgProcesses[MAX_BG_PROCESSES], int *bgCou
         if (bgProcesses[i] == pid)
         {
             found = 1;
+            fg_pid = pid;          // Store the foreground process PID
             waitpid(pid, NULL, 0); // Move to foreground and wait for it to finish
+            fg_pid = -1;           // Reset the foreground process PID
             for (int j = i; j < *bgCount - 1; j++)
             {
                 bgProcesses[j] = bgProcesses[j + 1];
@@ -445,6 +456,7 @@ void moveToForeground(pid_t pid, pid_t bgProcesses[MAX_BG_PROCESSES], int *bgCou
 
 void executePipedCommands(char *args[], char *inputBuffer)
 {
+
     int pipefd[2];
     pid_t pid1, pid2;
 
@@ -495,9 +507,6 @@ void executePipedCommands(char *args[], char *inputBuffer)
         dup2(pipefd[1], STDOUT_FILENO); // Redirect stdout to pipe write end
         close(pipefd[1]);
 
-        // Handle redirection for cmd1
-        redirect(cmd1, 0);
-
         char fullPath[MAX_LINE] = {0};
         findCommandPath(cmd1[0], fullPath);
         if (fullPath[0] == '\0')
@@ -508,36 +517,9 @@ void executePipedCommands(char *args[], char *inputBuffer)
 
         if (execv(fullPath, cmd1) == -1)
         {
-            fprintf(stderr, "Command execution failed\n");
+            perror("Command execution failed");
             exit(1);
         }
-    }
-
-    // Handle redirection in cmd2
-    int redirectIndex = -1;
-    for (int i = 0; cmd2[i] != NULL; i++)
-    {
-        if (strcmp(cmd2[i], ">") == 0 || strcmp(cmd2[i], ">>") == 0)
-        {
-            redirectIndex = i;
-            break;
-        }
-    }
-
-    char *outputFile = NULL;
-    int append = 0;
-    if (redirectIndex != -1)
-    {
-        if (cmd2[redirectIndex + 1] == NULL)
-        {
-            fprintf(stderr, "Error: No output file specified for redirection.\n");
-            exit(1);
-        }
-        outputFile = cmd2[redirectIndex + 1];
-        if (strcmp(cmd2[redirectIndex], ">>") == 0)
-            append = 1;
-
-        cmd2[redirectIndex] = NULL; // Truncate cmd2 at redirection operator
     }
 
     pid2 = fork();
@@ -547,28 +529,6 @@ void executePipedCommands(char *args[], char *inputBuffer)
         close(pipefd[1]);              // Close unused write end
         dup2(pipefd[0], STDIN_FILENO); // Redirect stdin to pipe read end
         close(pipefd[0]);
-
-        // Handle output redirection
-        if (outputFile != NULL)
-        {
-            int fd;
-            if (append)
-                fd = open(outputFile, O_WRONLY | O_CREAT | O_APPEND, 0644);
-            else
-                fd = open(outputFile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-
-            if (fd < 0)
-            {
-                fprintf(stderr, "Error opening output file\n");
-                exit(1);
-            }
-
-            dup2(fd, STDOUT_FILENO);
-            close(fd);
-        }
-
-        // Handle redirection for cmd2
-        redirect(cmd2, 0);
 
         char fullPath[MAX_LINE] = {0};
         findCommandPath(cmd2[0], fullPath);
@@ -580,7 +540,7 @@ void executePipedCommands(char *args[], char *inputBuffer)
 
         if (execv(fullPath, cmd2) == -1)
         {
-            fprintf(stderr, "Command execution failed\n");
+            perror("Command execution failed");
             exit(1);
         }
     }
@@ -605,12 +565,33 @@ void handleSigTSTP(int sig)
         return;
     }
 }
+void handleSigCHLD(int sig)
+{
+    pid_t pid;
+    int status;
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
+    {
+        // Remove the terminated process from bgProcesses
+        for (int i = 0; i < bgCount; i++)
+        {
+            if (bgProcesses[i] == pid)
+            {
+                for (int j = i; j < bgCount - 1; j++)
+                {
+                    bgProcesses[j] = bgProcesses[j + 1];
+                }
+                bgCount--;
+                break;
+            }
+        }
+    }
+}
 void terminateProgram(int bgCount)
 {
 
     if (bgCount != 0)
     {
-        fprintf(stderr, "There are still background process that are still running!\n");
+        printf("There are still background process that are still running!");
     }
     else
         exit(1);
@@ -655,7 +636,7 @@ int redirect(char *args[], int background)
             int fd = open(args[i + 1], O_WRONLY | O_TRUNC | O_CREAT, 0644);
             if (fd < 0)
             {
-                fprintf(stderr, "Error opening file\n");
+                perror("Error opening file");
                 exit(1);
             }
             args[i] = NULL;
@@ -667,7 +648,7 @@ int redirect(char *args[], int background)
             int fd = open(args[i + 1], O_WRONLY | O_APPEND | O_CREAT, 0644);
             if (fd < 0)
             {
-                fprintf(stderr, "Error opening file\n");
+                perror("Error opening file");
                 exit(1);
             }
             args[i] = NULL;
@@ -679,7 +660,7 @@ int redirect(char *args[], int background)
             int fd = open(args[i + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
             if (fd < 0)
             {
-                fprintf(stderr, "Error opening file\n");
+                perror("Error opening file");
                 exit(1);
             }
             args[i] = NULL;
@@ -701,7 +682,7 @@ int redirect(char *args[], int background)
                 int fd_in = open(args[i + 1], O_RDONLY);
                 if (fd_in < 0)
                 {
-                    fprintf(stderr, "Error opening input file\n");
+                    perror("Error opening input file");
                     exit(1);
                 }
 
@@ -709,7 +690,7 @@ int redirect(char *args[], int background)
                 int fd_out = open(args[i + 3], O_WRONLY | O_CREAT | O_TRUNC, 0644);
                 if (fd_out < 0)
                 {
-                    fprintf(stderr, "Error opening output file\n");
+                    perror("Error opening output file");
                     exit(1);
                 }
 
@@ -737,7 +718,7 @@ int redirect(char *args[], int background)
                 int fd_in = open(args[i + 1], O_RDONLY);
                 if (fd_in < 0)
                 {
-                    fprintf(stderr, "Error opening input file\n");
+                    perror("Error opening input file");
                     exit(1);
                 }
 
@@ -754,7 +735,7 @@ int redirect(char *args[], int background)
 
         if (execv(fullPath, args) == -1)
         {
-            fprintf(stderr, "Command execution failed\n");
+            perror("Command execution failed");
             exit(1);
         }
     }
