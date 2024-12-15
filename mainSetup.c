@@ -59,11 +59,13 @@ int main(void)
 
         if (hasPipe)
         {
+            addToHistory(args, historyBuffer);
             executePipedCommands(args, inputBuffer);
             continue;
         }
         if (redirect(args, background))
         {
+            addToHistory(args, historyBuffer);
             continue;
         }
         if (strcmp(args[0], "exit") == 0)
@@ -120,7 +122,20 @@ int main(void)
         {
             if (args[1] != NULL)
             {
-                pid_t pid = atoi(args[1]);
+                if (args[1][0] != '%')
+                {
+                    fprintf(stderr, "USE fg WITH CORRECT SYNTAX.\n");
+                    continue;
+                }
+
+                char fgIndex[MAX_LINE];
+                int i;
+                for (i = 0; args[1][i] != '\0'; i++)
+                {
+                    fgIndex[i - 1] = args[1][i];
+                }
+                fgIndex[i - 1] = '\0';
+                pid_t pid = atoi(fgIndex);
                 moveToForeground(pid, bgProcesses, &bgCount);
             }
             else
@@ -131,6 +146,8 @@ int main(void)
         }
 
         // Add to history
+        for (int i = 0; args[i] != NULL; i++)
+            printf("args[%d]: %s\n", i, args[i]);
         addToHistory(args, historyBuffer);
 
         // Execute command
@@ -204,7 +221,6 @@ void setup(char inputBuffer[], char *args[], int *background)
         {
         case ' ':
         case '\t':
-        case '%':
             if (start != -1)
             {
                 args[ct++] = &inputBuffer[start];
@@ -255,6 +271,7 @@ void findCommandPath(const char *command, char *fullPath)
 }
 void executeFromHistory(char *historyLine, char *args[])
 {
+
     int background = 0;
     int ct = 0, start = -1;
 
@@ -266,7 +283,6 @@ void executeFromHistory(char *historyLine, char *args[])
         {
         case ' ':
         case '\t':
-        case '%':
             if (start != -1)
             {
                 args[ct++] = &historyLine[start];
@@ -301,6 +317,26 @@ void executeFromHistory(char *historyLine, char *args[])
     if (args[0] == NULL)
     {
         printf("Error: Invalid command in history.\n");
+        return;
+    }
+    int hasPipe = 0;
+    for (int i = 0; args[i] != NULL; i++)
+    {
+        if (strcmp(args[i], "|") == 0)
+        {
+            hasPipe = 1;
+            break;
+        }
+    }
+
+    if (hasPipe)
+    {
+        executePipedCommands(args, historyLine);
+        return;
+    }
+    // If index has a I/O operation
+    if (redirect(args, background))
+    {
         return;
     }
 
@@ -408,6 +444,7 @@ void moveToForeground(pid_t pid, pid_t bgProcesses[MAX_BG_PROCESSES], int *bgCou
 
 void executePipedCommands(char *args[], char *inputBuffer)
 {
+
     int pipefd[2];
     pid_t pid1, pid2;
 
@@ -529,6 +566,7 @@ void terminateProgram(int bgCount)
 
 int redirect(char *args[], int background)
 {
+
     int i = 0;
     while (args[i] != NULL)
     {
