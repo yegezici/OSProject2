@@ -16,6 +16,7 @@
 pid_t fg_pid = -1;
 pid_t bgProcesses[MAX_BG_PROCESSES];
 int bgCount = 0;
+
 void handleSigTSTP(int sig);
 void handleSigCHLD(int sig);
 void setup(char inputBuffer[], char *args[], int *background);
@@ -31,7 +32,7 @@ int redirect(char *args[], int background);
 int main(void)
 {
     signal(SIGTSTP, handleSigTSTP);
-    signal(SIGCHLD, handleSigCHLD); // Register signal handler for SIGCHLD
+    signal(SIGCHLD, handleSigCHLD);
     char inputBuffer[MAX_LINE];
     char historyBuffer[MAX_HISTORY][MAX_LINE] = {0};
     int background;
@@ -39,6 +40,7 @@ int main(void)
 
     while (1)
     {
+
         printf("myshell: ");
         fflush(stdout);
 
@@ -130,33 +132,26 @@ int main(void)
                     continue;
                 }
 
-                char fgIndex[MAX_LINE];
-                int i;
-                for (i = 1; args[1][i] != '\0'; i++) // Start from 1 to skip '%'
-                {
-                    fgIndex[i - 1] = args[1][i];
-                }
-                fgIndex[i - 1] = '\0';
-                pid_t pid = atoi(fgIndex);
+                // Correctly parse the process ID from the argument
+                pid_t pid = atoi(&args[1][1]);
                 moveToForeground(pid, bgProcesses, &bgCount);
             }
             else
             {
-                printf("Usage: fg <pid>\n");
+                printf("Usage: fg %%<pid>\n");
             }
             continue;
         }
 
         // Add to history
-        for (int i = 0; args[i] != NULL; i++)
-            printf("args[%d]: %s\n", i, args[i]);
+
         addToHistory(args, historyBuffer, background);
 
         // Execute command
         pid_t pid = fork();
         if (pid < 0)
         {
-            perror("Fork failed");
+            fprintf(stderr, "%s", "Input is invalid.");
             continue;
         }
 
@@ -168,7 +163,7 @@ int main(void)
 
             if (fullPath[0] == '\0')
             {
-                fprintf(stderr, "Command not found: %s\n", args[0]);
+                fprintf(stderr, "%s", "Input is invalid.");
                 exit(1);
             }
 
@@ -195,9 +190,9 @@ int main(void)
             }
             else
             {
-                fg_pid = pid; // Store the foreground process PID
+                fg_pid = pid;
                 waitpid(pid, NULL, 0);
-                fg_pid = -1; // Reset the foreground process PID
+                fg_pid = -1;
             }
         }
     }
@@ -215,7 +210,7 @@ void setup(char inputBuffer[], char *args[], int *background)
         exit(0); // End of user input (Ctrl+D)
     if (length < 0 && errno != EINTR)
     {
-        perror("Error reading the command");
+        fprintf(stderr, "%s", "Input is invalid.");
         exit(-1);
     }
 
@@ -256,7 +251,7 @@ void findCommandPath(const char *command, char *fullPath)
     char *pathEnv = getenv("PATH");
     if (!pathEnv)
     {
-        perror("PATH environment variable not found");
+        fprintf(stderr, "%s", "Input is invalid.");
         exit(1);
     }
 
@@ -275,9 +270,7 @@ void findCommandPath(const char *command, char *fullPath)
 }
 void executeFromHistory(char *historyLine, char *args[])
 {
-    for (int i = 0; args[i] != NULL; i++)
-        printf("history: args[%d]: %s\n", i, args[i]);
-    printf("historyLine: %s\n", historyLine);
+
     int background = 0;
     int ct = 0, start = -1;
 
@@ -350,7 +343,7 @@ void executeFromHistory(char *historyLine, char *args[])
     pid_t pid = fork();
     if (pid < 0)
     {
-        perror("Fork failed");
+        fprintf(stderr, "%s", "Input is invalid.");
         return;
     }
 
@@ -362,7 +355,7 @@ void executeFromHistory(char *historyLine, char *args[])
 
         if (fullPath[0] == '\0')
         {
-            fprintf(stderr, "Command not found: %s\n", args[0]);
+            fprintf(stderr, "%s", "Input is invalid.");
             exit(1);
         }
 
@@ -378,11 +371,14 @@ void executeFromHistory(char *historyLine, char *args[])
         if (background)
         {
             // Background execution
+            bgProcesses[bgCount++] = pid;
             printf("Process %d running in background\n", pid);
         }
         else
         {
+            fg_pid = pid;
             waitpid(pid, NULL, 0); // Wait for the command to complete
+            fg_pid = -1;
         }
     }
 }
@@ -437,9 +433,9 @@ void moveToForeground(pid_t pid, pid_t bgProcesses[MAX_BG_PROCESSES], int *bgCou
         if (bgProcesses[i] == pid)
         {
             found = 1;
-            fg_pid = pid;          // Store the foreground process PID
+            fg_pid = pid; // Set the foreground process ID
             waitpid(pid, NULL, 0); // Move to foreground and wait for it to finish
-            fg_pid = -1;           // Reset the foreground process PID
+            fg_pid = -1; // Reset the foreground process ID
             for (int j = i; j < *bgCount - 1; j++)
             {
                 bgProcesses[j] = bgProcesses[j + 1];
@@ -450,21 +446,20 @@ void moveToForeground(pid_t pid, pid_t bgProcesses[MAX_BG_PROCESSES], int *bgCou
     }
     if (!found)
     {
-        fprintf(stderr, "Process with PID %d not found in background processes.\n", pid);
+        printf("Process with PID %d not found in background processes.\n", pid);
     }
 }
 
 void executePipedCommands(char *args[], char *inputBuffer)
 {
-
     int pipefd[2];
     pid_t pid1, pid2;
 
-    // Parse input into two commands
     char *cmd1[MAX_LINE / 2 + 1];
     char *cmd2[MAX_LINE / 2 + 1];
     int cmd1_len = 0, cmd2_len = 0;
     int pipeIndex = -1;
+    int redirectIndex = -1;
 
     for (int i = 0; args[i] != NULL; i++)
     {
@@ -481,37 +476,56 @@ void executePipedCommands(char *args[], char *inputBuffer)
         return;
     }
 
+    for (int i = pipeIndex + 1; args[i] != NULL; i++)
+    {
+        if (strcmp(args[i], ">") == 0 || strcmp(args[i], ">>") == 0)
+        {
+            redirectIndex = i;
+            break;
+        }
+    }
+
     for (int i = 0; i < pipeIndex; i++)
     {
         cmd1[cmd1_len++] = args[i];
     }
     cmd1[cmd1_len] = NULL;
 
-    for (int i = pipeIndex + 1; args[i] != NULL; i++)
+    if (redirectIndex != -1)
     {
-        cmd2[cmd2_len++] = args[i];
+        for (int i = pipeIndex + 1; i < redirectIndex; i++)
+        {
+            cmd2[cmd2_len++] = args[i];
+        }
+        cmd2[cmd2_len] = NULL;
     }
-    cmd2[cmd2_len] = NULL;
+    else
+    {
+        for (int i = pipeIndex + 1; args[i] != NULL; i++)
+        {
+            cmd2[cmd2_len++] = args[i];
+        }
+        cmd2[cmd2_len] = NULL;
+    }
 
     if (pipe(pipefd) == -1)
     {
-        perror("Pipe creation failed");
+        fprintf(stderr, "%s", "Input is invalid.");
         return;
     }
 
     pid1 = fork();
     if (pid1 == 0)
     {
-        // First child: Executes cmd1, writes output to pipe
-        close(pipefd[0]);               // Close unused read end
-        dup2(pipefd[1], STDOUT_FILENO); // Redirect stdout to pipe write end
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
         close(pipefd[1]);
 
         char fullPath[MAX_LINE] = {0};
         findCommandPath(cmd1[0], fullPath);
         if (fullPath[0] == '\0')
         {
-            fprintf(stderr, "Command not found: %s\n", cmd1[0]);
+            fprintf(stderr, "%s", "Input is invalid.");
             exit(1);
         }
 
@@ -525,16 +539,35 @@ void executePipedCommands(char *args[], char *inputBuffer)
     pid2 = fork();
     if (pid2 == 0)
     {
-        // Second child: Reads from pipe, executes cmd2
-        close(pipefd[1]);              // Close unused write end
-        dup2(pipefd[0], STDIN_FILENO); // Redirect stdin to pipe read end
+        close(pipefd[1]);
+        dup2(pipefd[0], STDIN_FILENO);
         close(pipefd[0]);
+
+        if (redirectIndex != -1)
+        {
+            int fd;
+            if (strcmp(args[redirectIndex], ">") == 0)
+            {
+                fd = open(args[redirectIndex + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            }
+            else
+            {
+                fd = open(args[redirectIndex + 1], O_WRONLY | O_CREAT | O_APPEND, 0644);
+            }
+            if (fd < 0)
+            {
+                perror("Failed to open file");
+                exit(1);
+            }
+            dup2(fd, STDOUT_FILENO);
+            close(fd);
+        }
 
         char fullPath[MAX_LINE] = {0};
         findCommandPath(cmd2[0], fullPath);
         if (fullPath[0] == '\0')
         {
-            fprintf(stderr, "Command not found: %s\n", cmd2[0]);
+            fprintf(stderr, "%s", "Input is invalid.");
             exit(1);
         }
 
@@ -545,7 +578,6 @@ void executePipedCommands(char *args[], char *inputBuffer)
         }
     }
 
-    // Parent process: Close both ends of the pipe and wait for children
     close(pipefd[0]);
     close(pipefd[1]);
     waitpid(pid1, NULL, 0);
@@ -565,33 +597,12 @@ void handleSigTSTP(int sig)
         return;
     }
 }
-void handleSigCHLD(int sig)
-{
-    pid_t pid;
-    int status;
-    while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
-    {
-        // Remove the terminated process from bgProcesses
-        for (int i = 0; i < bgCount; i++)
-        {
-            if (bgProcesses[i] == pid)
-            {
-                for (int j = i; j < bgCount - 1; j++)
-                {
-                    bgProcesses[j] = bgProcesses[j + 1];
-                }
-                bgCount--;
-                break;
-            }
-        }
-    }
-}
 void terminateProgram(int bgCount)
 {
 
     if (bgCount != 0)
     {
-        printf("There are still background process that are still running!");
+        printf("There are still background process that are still running!\n");
     }
     else
         exit(1);
@@ -625,7 +636,7 @@ int redirect(char *args[], int background)
     pid_t pid = fork();
     if (pid < 0)
     {
-        fprintf(stderr, "Fork failed!\n");
+        fprintf(stderr, "%s", "Input is invalid.");
         return -1;
     }
 
@@ -636,7 +647,7 @@ int redirect(char *args[], int background)
             int fd = open(args[i + 1], O_WRONLY | O_TRUNC | O_CREAT, 0644);
             if (fd < 0)
             {
-                perror("Error opening file");
+                fprintf(stderr, "%s", "Input is invalid.");
                 exit(1);
             }
             args[i] = NULL;
@@ -648,7 +659,7 @@ int redirect(char *args[], int background)
             int fd = open(args[i + 1], O_WRONLY | O_APPEND | O_CREAT, 0644);
             if (fd < 0)
             {
-                perror("Error opening file");
+                fprintf(stderr, "%s", "Input is invalid.");
                 exit(1);
             }
             args[i] = NULL;
@@ -660,7 +671,7 @@ int redirect(char *args[], int background)
             int fd = open(args[i + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
             if (fd < 0)
             {
-                perror("Error opening file");
+                fprintf(stderr, "%s", "Input is invalid.");
                 exit(1);
             }
             args[i] = NULL;
@@ -682,7 +693,7 @@ int redirect(char *args[], int background)
                 int fd_in = open(args[i + 1], O_RDONLY);
                 if (fd_in < 0)
                 {
-                    perror("Error opening input file");
+                    fprintf(stderr, "%s", "Input is invalid.");
                     exit(1);
                 }
 
@@ -690,7 +701,7 @@ int redirect(char *args[], int background)
                 int fd_out = open(args[i + 3], O_WRONLY | O_CREAT | O_TRUNC, 0644);
                 if (fd_out < 0)
                 {
-                    perror("Error opening output file");
+                    fprintf(stderr, "%s", "Input is invalid.");
                     exit(1);
                 }
 
@@ -718,7 +729,7 @@ int redirect(char *args[], int background)
                 int fd_in = open(args[i + 1], O_RDONLY);
                 if (fd_in < 0)
                 {
-                    perror("Error opening input file");
+                    fprintf(stderr, "%s", "Input is invalid.");
                     exit(1);
                 }
 
@@ -747,4 +758,25 @@ int redirect(char *args[], int background)
         }
     }
     return 1;
+}
+void handleSigCHLD(int sig)
+{
+    pid_t pid;
+    int status;
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
+    {
+        // Remove the terminated process from bgProcesses
+        for (int i = 0; i < bgCount; i++)
+        {
+            if (bgProcesses[i] == pid)
+            {
+                for (int j = i; j < bgCount - 1; j++)
+                {
+                    bgProcesses[j] = bgProcesses[j + 1];
+                }
+                bgCount--;
+                break;
+            }
+        }
+    }
 }
