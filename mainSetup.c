@@ -14,6 +14,8 @@
 #define MAX_BG_PROCESSES 20
 
 pid_t fg_pid = -1;
+pid_t bgProcesses[MAX_BG_PROCESSES];
+int bgCount = 0;
 
 void handleSigTSTP(int sig);
 void setup(char inputBuffer[], char *args[], int *background);
@@ -33,11 +35,10 @@ int main(void)
     char historyBuffer[MAX_HISTORY][MAX_LINE] = {0};
     int background;
     char *args[MAX_LINE / 2 + 1];
-    pid_t bgProcesses[MAX_BG_PROCESSES];
-    int bgCount = 0;
 
     while (1)
     {
+
         printf("myshell: ");
         fflush(stdout);
 
@@ -147,8 +148,7 @@ int main(void)
         }
 
         // Add to history
-        for (int i = 0; args[i] != NULL; i++)
-            printf("args[%d]: %s\n", i, args[i]);
+
         addToHistory(args, historyBuffer, background);
 
         // Execute command
@@ -272,9 +272,7 @@ void findCommandPath(const char *command, char *fullPath)
 }
 void executeFromHistory(char *historyLine, char *args[])
 {
-    for(int i = 0; args[i] != NULL; i++)
-        printf("history: args[%d]: %s\n", i, args[i]);
-    printf("historyLine: %s\n", historyLine);
+
     int background = 0;
     int ct = 0, start = -1;
 
@@ -375,6 +373,7 @@ void executeFromHistory(char *historyLine, char *args[])
         if (background)
         {
             // Background execution
+            bgProcesses[bgCount++] = pid;
             printf("Process %d running in background\n", pid);
         }
         else
@@ -395,12 +394,14 @@ void addToHistory(char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE], int b
         // Add the argument to inputBuffer
         strcat(inputBuffer, args[i]);
 
-        // Add a space between arguments 
+        // Add a space between arguments
         if (args[i] != NULL)
         {
             strcat(inputBuffer, " ");
         }
-    }if(background){
+    }
+    if (background)
+    {
         strcat(inputBuffer, "& ");
     }
     // Shift history to make space for the new command
@@ -408,7 +409,6 @@ void addToHistory(char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE], int b
     {
         strncpy(historyBuffer[i], historyBuffer[i - 1], MAX_LINE);
     }
-    
 
     // Store the reconstructed command in historyBuffer
     strncpy(historyBuffer[0], inputBuffer, MAX_LINE);
@@ -564,7 +564,7 @@ void terminateProgram(int bgCount)
 
     if (bgCount != 0)
     {
-        printf("There are still background process that are still running!");
+        printf("There are still background process that are still running!\n");
     }
     else
         exit(1);
