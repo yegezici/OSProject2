@@ -17,8 +17,8 @@ pid_t fg_pid = -1;
 pid_t bgProcesses[MAX_BG_PROCESSES];
 int bgCount = 0;
 
-void handleSigCHLD(int sig);
 void handleSigTSTP(int sig);
+void handleSigCHLD(int sig);
 void setup(char inputBuffer[], char *args[], int *background);
 void findCommandPath(const char *command, char *fullPath);
 void executeFromHistory(char *historyLine, char *args[]);
@@ -382,7 +382,9 @@ void executeFromHistory(char *historyLine, char *args[])
         }
         else
         {
+            fg_pid = pid;
             waitpid(pid, NULL, 0); // Wait for the command to complete
+            fg_pid = -1;
         }
     }
 }
