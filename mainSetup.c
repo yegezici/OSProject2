@@ -19,7 +19,7 @@ void handleSigTSTP(int sig);
 void setup(char inputBuffer[], char *args[], int *background);
 void findCommandPath(const char *command, char *fullPath);
 void executeFromHistory(char *historyLine, char *args[]);
-void addToHistory(char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE]);
+void addToHistory(char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE], int background);
 void printHistory(char historyBuffer[MAX_HISTORY][MAX_LINE]);
 void moveToForeground(pid_t pid, pid_t bgProcesses[MAX_BG_PROCESSES], int *bgCount);
 void executePipedCommands(char *args[], char *inputBuffer);
@@ -59,13 +59,13 @@ int main(void)
 
         if (hasPipe)
         {
-            addToHistory(args, historyBuffer);
+            addToHistory(args, historyBuffer, background);
             executePipedCommands(args, inputBuffer);
             continue;
         }
         if (redirect(args, background))
         {
-            addToHistory(args, historyBuffer);
+            addToHistory(args, historyBuffer, background);
             continue;
         }
         if (strcmp(args[0], "exit") == 0)
@@ -149,7 +149,7 @@ int main(void)
         // Add to history
         for (int i = 0; args[i] != NULL; i++)
             printf("args[%d]: %s\n", i, args[i]);
-        addToHistory(args, historyBuffer);
+        addToHistory(args, historyBuffer, background);
 
         // Execute command
         pid_t pid = fork();
@@ -272,7 +272,9 @@ void findCommandPath(const char *command, char *fullPath)
 }
 void executeFromHistory(char *historyLine, char *args[])
 {
-
+    for(int i = 0; args[i] != NULL; i++)
+        printf("history: args[%d]: %s\n", i, args[i]);
+    printf("historyLine: %s\n", historyLine);
     int background = 0;
     int ct = 0, start = -1;
 
@@ -382,7 +384,7 @@ void executeFromHistory(char *historyLine, char *args[])
     }
 }
 
-void addToHistory(char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE])
+void addToHistory(char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE], int background)
 {
     char inputBuffer[MAX_LINE] = {0};
     int index = 0;
@@ -393,17 +395,20 @@ void addToHistory(char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE])
         // Add the argument to inputBuffer
         strcat(inputBuffer, args[i]);
 
-        // Add a space between arguments (except for the last one)
+        // Add a space between arguments 
         if (args[i] != NULL)
         {
             strcat(inputBuffer, " ");
         }
+    }if(background){
+        strcat(inputBuffer, "& ");
     }
     // Shift history to make space for the new command
     for (int i = MAX_HISTORY - 1; i > 0; i--)
     {
         strncpy(historyBuffer[i], historyBuffer[i - 1], MAX_LINE);
     }
+    
 
     // Store the reconstructed command in historyBuffer
     strncpy(historyBuffer[0], inputBuffer, MAX_LINE);
