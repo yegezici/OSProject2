@@ -6,10 +6,183 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <fcntl.h>
+#include <sys/stat.h>
+#include <signal.h>
 
 #define MAX_LINE 80 /* 80 chars per line, per command, should be enough. */
 #define MAX_HISTORY 10
 #define MAX_BG_PROCESSES 20
+
+pid_t fg_pid = -1;
+
+void handleSigTSTP(int sig);
+void setup(char inputBuffer[], char *args[], int *background);
+void findCommandPath(const char *command, char *fullPath);
+void executeFromHistory(char *historyLine, char *args[]);
+void addToHistory(char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE]);
+void printHistory(char historyBuffer[MAX_HISTORY][MAX_LINE]);
+void moveToForeground(pid_t pid, pid_t bgProcesses[MAX_BG_PROCESSES], int *bgCount);
+void executePipedCommands(char *args[], char *inputBuffer);
+void terminateProgram(int bgCount);
+int redirect(char *args[], int background);
+
+int main(void)
+{
+    signal(SIGTSTP, handleSigTSTP);
+    char inputBuffer[MAX_LINE];
+    char historyBuffer[MAX_HISTORY][MAX_LINE] = {0};
+    int background;
+    char *args[MAX_LINE / 2 + 1];
+    pid_t bgProcesses[MAX_BG_PROCESSES];
+    int bgCount = 0;
+
+    while (1)
+    {
+        printf("myshell: ");
+        fflush(stdout);
+
+        setup(inputBuffer, args, &background);
+
+        if (args[0] == NULL)
+            continue; // Ignore empty input
+
+        // Pipe handling
+        int hasPipe = 0;
+        for (int i = 0; args[i] != NULL; i++)
+        {
+            if (strcmp(args[i], "|") == 0)
+            {
+                hasPipe = 1;
+                break;
+            }
+        }
+
+        if (hasPipe)
+        {
+            executePipedCommands(args, inputBuffer);
+            continue;
+        }
+        if (redirect(args, background))
+        {
+            continue;
+        }
+        if (strcmp(args[0], "exit") == 0)
+        {
+            terminateProgram(bgCount);
+            continue;
+        }
+
+        // Handle history command
+        if (strcmp(args[0], "history") == 0)
+        {
+            if (args[1] == NULL)
+            {
+                // Print history
+                printHistory(historyBuffer);
+            }
+            else
+            {
+                if (args[1][0] != '-')
+                {
+                    printf("\"-\" must be entered before the index.\n");
+                    continue;
+                }
+                // Try to parse the index from args[1]
+                int historyIndex = args[1][1] - '0';
+
+                // Validate index range
+                if (historyIndex >= 0 && historyIndex < MAX_HISTORY)
+                {
+                    if (historyBuffer[historyIndex][0] != '\0') // Check if the history entry is valid
+                    {
+                        char historyLine[MAX_LINE];
+                        strncpy(historyLine, historyBuffer[historyIndex], MAX_LINE); // Copy the history command
+                        historyLine[MAX_LINE - 1] = '\0';                            // Null-terminate
+
+                        // Parse and execute the history command
+                        executeFromHistory(historyLine, args);
+                    }
+                    else
+                    {
+                        printf("Error: No such history entry.\n");
+                    }
+                }
+                else
+                {
+                    printf("Error: Invalid history index.\n");
+                }
+            }
+            continue;
+        }
+
+        // Handle fg command
+        if (strcmp(args[0], "fg") == 0)
+        {
+            if (args[1] != NULL)
+            {
+                pid_t pid = atoi(args[1]);
+                moveToForeground(pid, bgProcesses, &bgCount);
+            }
+            else
+            {
+                printf("Usage: fg <pid>\n");
+            }
+            continue;
+        }
+
+        // Add to history
+        addToHistory(args, historyBuffer);
+
+        // Execute command
+        pid_t pid = fork();
+        if (pid < 0)
+        {
+            perror("Fork failed");
+            continue;
+        }
+
+        if (pid == 0)
+        {
+            // Child process
+            char fullPath[MAX_LINE] = {0};
+            findCommandPath(args[0], fullPath);
+
+            if (fullPath[0] == '\0')
+            {
+                fprintf(stderr, "Command not found: %s\n", args[0]);
+                exit(1);
+            }
+
+            if (execv(fullPath, args) == -1)
+            {
+                perror("Command execution failed");
+                exit(1);
+            }
+        }
+        else
+        {
+            // Parent process
+            if (background)
+            {
+                if (bgCount < MAX_BG_PROCESSES)
+                {
+                    bgProcesses[bgCount++] = pid;
+                    printf("Process %d running in background\n", pid);
+                }
+                else
+                {
+                    printf("Maximum background processes reached.\n");
+                }
+            }
+            else
+            {
+                waitpid(pid, NULL, 0);
+            }
+        }
+    }
+
+    return 0;
+}
 
 void setup(char inputBuffer[], char *args[], int *background)
 {
@@ -17,7 +190,6 @@ void setup(char inputBuffer[], char *args[], int *background)
     *background = 0;
 
     length = read(STDIN_FILENO, inputBuffer, MAX_LINE);
-    printf("inputBuffer: %s\n", inputBuffer);
     if (length == 0)
         exit(0); // End of user input (Ctrl+D)
     if (length < 0 && errno != EINTR)
@@ -57,12 +229,120 @@ void setup(char inputBuffer[], char *args[], int *background)
                 start = i;
         }
     }
-
-    for(int i = 0; args[i] != NULL; i++)
-    {
-        printf("args[%d]: %s\n", i, args[i]);
-    }
     args[ct] = NULL;
+}
+void findCommandPath(const char *command, char *fullPath)
+{
+    char *pathEnv = getenv("PATH");
+    if (!pathEnv)
+    {
+        perror("PATH environment variable not found");
+        exit(1);
+    }
+
+    char *path = strtok(pathEnv, ":");
+    while (path != NULL)
+    {
+        snprintf(fullPath, MAX_LINE, "%s/%s", path, command);
+        if (access(fullPath, X_OK) == 0)
+        {
+            return;
+        }
+        path = strtok(NULL, ":");
+    }
+
+    fullPath[0] = '\0'; // Command not found
+}
+void executeFromHistory(char *historyLine, char *args[])
+{
+    int background = 0;
+    int ct = 0, start = -1;
+
+    // Parse the historyLine into arguments
+    int i;
+    for (i = 0; historyLine[i] != '\0'; i++)
+    {
+        switch (historyLine[i])
+        {
+        case ' ':
+        case '\t':
+        case '%':
+            if (start != -1)
+            {
+                args[ct++] = &historyLine[start];
+                historyLine[i] = '\0'; // Null-terminate the argument
+                start = -1;
+            }
+            break;
+        case '\n':
+            if (start != -1)
+            {
+                args[ct++] = &historyLine[start];
+            }
+            historyLine[i] = '\0'; // Null-terminate the argument
+            args[ct] = NULL;       // Mark the end of the argument list
+            break;
+        case '&':
+            background = 1;
+            historyLine[i] = '\0'; // Remove '&' from inputBuffer
+            break;
+        default:
+
+            if (start == -1)
+                start = i;
+        }
+    }
+
+    // Ensure the last argument is null-terminated
+    if (args[ct] != NULL)
+        args[ct] = NULL;
+
+    // If no valid command, return
+    if (args[0] == NULL)
+    {
+        printf("Error: Invalid command in history.\n");
+        return;
+    }
+
+    // Fork and execute the command from history
+    pid_t pid = fork();
+    if (pid < 0)
+    {
+        perror("Fork failed");
+        return;
+    }
+
+    if (pid == 0)
+    {
+        // Child process
+        char fullPath[MAX_LINE] = {0};
+        findCommandPath(args[0], fullPath);
+
+        if (fullPath[0] == '\0')
+        {
+            fprintf(stderr, "Command not found: %s\n", args[0]);
+            exit(1);
+        }
+
+        if (execv(fullPath, args) == -1)
+        {
+            perror("Command execution failed");
+            exit(1);
+        }
+    }
+    else
+    {
+        // Parent process
+        if (background)
+        {
+            // Background execution
+            printf("Process %d running in background\n", pid);
+        }
+        else
+        {
+            waitpid(pid, NULL, 0); // Wait for the command to complete
+        }
+    }
 }
 
 void addToHistory(char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE])
@@ -77,15 +357,11 @@ void addToHistory(char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE])
         strcat(inputBuffer, args[i]);
 
         // Add a space between arguments (except for the last one)
-        if (args[i + 1] != NULL)
+        if (args[i] != NULL)
         {
             strcat(inputBuffer, " ");
         }
     }
-
-    // Print the command for debugging purposes
-    printf("Adding to history: %s\n", inputBuffer);
-
     // Shift history to make space for the new command
     for (int i = MAX_HISTORY - 1; i > 0; i--)
     {
@@ -128,31 +404,6 @@ void moveToForeground(pid_t pid, pid_t bgProcesses[MAX_BG_PROCESSES], int *bgCou
     {
         printf("Process with PID %d not found in background processes.\n", pid);
     }
-}
-
-void findCommandPath(const char *command, char *fullPath)
-{
-    printf("Command: %s\n", command);
-    printf("fullPath: %s\n", fullPath);
-    char *pathEnv = getenv("PATH");
-    if (!pathEnv)
-    {
-        perror("PATH environment variable not found");
-        exit(1);
-    }
-
-    char *path = strtok(pathEnv, ":");
-    while (path != NULL)
-    {
-        snprintf(fullPath, MAX_LINE, "%s/%s", path, command);
-        if (access(fullPath, X_OK) == 0)
-        {
-            return;
-        }
-        path = strtok(NULL, ":");
-    }
-
-    fullPath[0] = '\0'; // Command not found
 }
 
 void executePipedCommands(char *args[], char *inputBuffer)
@@ -252,236 +503,177 @@ void executePipedCommands(char *args[], char *inputBuffer)
     waitpid(pid2, NULL, 0);
 }
 
-int main(void)
+void handleSigTSTP(int sig)
 {
-    char inputBuffer[MAX_LINE];
-    char historyBuffer[MAX_HISTORY][MAX_LINE] = {0};
-    int background;
-    char *args[MAX_LINE / 2 + 1];
-    pid_t bgProcesses[MAX_BG_PROCESSES];
-    int bgCount = 0;
-
-    while (1)
+    if (fg_pid != -1)
     {
-        printf("myshell: ");
-        fflush(stdout);
+        printf("\nCaught SIGTSTP (Ctrl+Z). Terminating foreground process %d and its descendants.\n", fg_pid);
+        kill(fg_pid, SIGTERM); // Send SIGTERM to terminate the foreground process
+    }
+    else
+    {
+        printf("\nNo foreground process to terminate.\n");
+        return;
+    }
+}
+void terminateProgram(int bgCount)
+{
 
-        setup(inputBuffer, args, &background);
+    if (bgCount != 0)
+    {
+        printf("There are still background process that are still running!");
+    }
+    else
+        exit(1);
+}
 
-        if (args[0] == NULL)
-            continue; // Ignore empty input
-
-        // Pipe handling
-        int hasPipe = 0;
-        for (int i = 0; args[i] != NULL; i++)
+int redirect(char *args[], int background)
+{
+    int i = 0;
+    while (args[i] != NULL)
+    {
+        if (strcmp("<", args[i]) == 0 || strcmp(">>", args[i]) == 0 ||
+            strcmp("2>", args[i]) == 0 || strcmp(">", args[i]) == 0)
         {
-            if (strcmp(args[i], "|") == 0)
-            {
-                hasPipe = 1;
-                break;
-            }
+            break;
         }
-
-        if (hasPipe)
-        {
-            executePipedCommands(args, inputBuffer);
-            continue;
-        }
-
-        // Handle history command
-        if (strcmp(args[0], "history") == 0)
-        {
-            if (args[1] == NULL)
-            {
-                // Print history
-                printHistory(historyBuffer);
-            }
-            else if (args[1][0] == '-')
-            {
-                int index = atoi(&args[1][1]);
-
-                // Validate index
-                if (index >= 0 && index < MAX_HISTORY && historyBuffer[index][0] != '\0')
-                {
-                    char historyLine[MAX_LINE];
-
-                    // Copy the command from history to inputBuffer
-                    strncpy(historyLine, historyBuffer[index], MAX_LINE);
-                    historyLine[MAX_LINE - 1] = '\0'; // Null-terminate
-
-                    printf("Executing from history: %s\n", historyLine);
-
-                    // Manually parse the command into args[] (similar to setup() function)
-                    int background = 0;
-                    int ct = 0, start = -1;
-
-                    // Parse inputBuffer manually, just like the setup function
-                    for (int i = 0; historyLine[i] != '\0'; i++)
-                    {
-                        switch (historyLine[i])
-                        {
-                        case '-':
-                        case ' ':
-                        case '\t':
-                        case '%':
-                            if (start != -1)
-                            {
-                                historyLine[i] = '\0'; // End the argument
-                                args[ct++] = &historyLine[start];
-                                start = -1;
-                            }
-                            break;
-                        case '\n':
-                            if (start != -1)
-                            {
-                                historyLine[i] = '\0'; // End the argument
-                                args[ct++] = &historyLine[start];
-                            }
-                            args[ct] = NULL;
-                            break;
-                        case '&':
-                            background = 1;
-                            historyLine[i] = '\0'; // Remove '&' from inputBuffer
-                            break;
-                        default:
-                            if (start == -1)
-                                start = i;
-                        }
-                    }
-
-                    // Ensure the last argument is null-terminated
-                    if (args[ct] != NULL)
-                        args[ct] = NULL;
-
-                    // If no valid command, continue
-                    if (args[1] == NULL)
-                    {
-                        printf("3131Error: Invalid command in history.\n");
-                        continue;
-                    }
-
-                    // Fork and execute the command from history
-                    pid_t pid = fork();
-                    if (pid < 0)
-                    {
-                        perror("Fork failed");
-                        continue;
-                    }
-
-                    if (pid == 0)
-                    {
-                        // Child process
-                        char fullPath[MAX_LINE] = {0};
-                        printf("Command:args    %s\n", args[0]);
-                        findCommandPath(args[0], fullPath);
-
-                        if (fullPath[0] == '\0')
-                        {
-                            fprintf(stderr, "Co13123mmand not found: %s\n", args[0]);
-                            exit(1);
-                        }
-                        printf("Executing from history: %s\n", fullPath);
-
-                        if (execv(fullPath, args) == -1)
-                        {
-                            perror("Command execution failed");
-                            exit(1);
-                        }
-                    }
-                    else
-                    {
-                        // Parent process
-                        if (background)
-                        {
-                            if (bgCount < MAX_BG_PROCESSES)
-                            {
-                                bgProcesses[bgCount++] = pid;
-                                printf("Process %d running in background\n", pid);
-                            }
-                            else
-                            {
-                                printf("Maximum background processes reached.\n");
-                            }
-                        }
-                        else
-                        {
-                            waitpid(pid, NULL, 0);
-                        }
-                    }
-                }
-                else
-                {
-                    printf("Invalid history index.\n");
-                }
-            }
-            continue;
-        }
-
-        // Handle fg command
-        if (strcmp(args[0], "fg") == 0)
-        {
-            if (args[1] != NULL)
-            {
-                pid_t pid = atoi(args[1]);
-                moveToForeground(pid, bgProcesses, &bgCount);
-            }
-            else
-            {
-                printf("Usage: fg <pid>\n");
-            }
-            continue;
-        }
-
-        // Add to history
-        addToHistory(args, historyBuffer);
-
-        // Execute command
-        pid_t pid = fork();
-        if (pid < 0)
-        {
-            perror("Fork failed");
-            continue;
-        }
-
-        if (pid == 0)
-        {
-            // Child process
-            char fullPath[MAX_LINE] = {0};
-            findCommandPath(args[0], fullPath);
-
-            if (fullPath[0] == '\0')
-            {
-                fprintf(stderr, "Command not found: %s\n", args[0]);
-                exit(1);
-            }
-
-            if (execv(fullPath, args) == -1)
-            {
-                perror("Command execution failed");
-                exit(1);
-            }
-        }
-        else
-        {
-            // Parent process
-            if (background)
-            {
-                if (bgCount < MAX_BG_PROCESSES)
-                {
-                    bgProcesses[bgCount++] = pid;
-                    printf("Process %d running in background\n", pid);
-                }
-                else
-                {
-                    printf("Maximum background processes reached.\n");
-                }
-            }
-            else
-            {
-                waitpid(pid, NULL, 0);
-            }
-        }
+        i++;
     }
 
-    return 0;
+    if (args[i] == NULL)
+    {
+        return 0;
+    }
+
+    if (args[i + 1] == NULL)
+    {
+        fprintf(stderr, "Missing argument.\n");
+        return 0;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0)
+    {
+        fprintf(stderr, "Fork failed!\n");
+        return -1;
+    }
+
+    if (pid == 0)
+    {
+        if (strcmp(">", args[i]) == 0)
+        {
+            int fd = open(args[i + 1], O_WRONLY | O_TRUNC | O_CREAT, 0644);
+            if (fd < 0)
+            {
+                perror("Error opening file");
+                exit(1);
+            }
+            args[i] = NULL;
+            dup2(fd, STDOUT_FILENO);
+            close(fd);
+        }
+        else if (strcmp(">>", args[i]) == 0)
+        {
+            int fd = open(args[i + 1], O_WRONLY | O_APPEND | O_CREAT, 0644);
+            if (fd < 0)
+            {
+                perror("Error opening file");
+                exit(1);
+            }
+            args[i] = NULL;
+            dup2(fd, STDOUT_FILENO);
+            close(fd);
+        }
+        else if (strcmp("2>", args[i]) == 0)
+        {
+            int fd = open(args[i + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd < 0)
+            {
+                perror("Error opening file");
+                exit(1);
+            }
+            args[i] = NULL;
+            dup2(fd, STDERR_FILENO);
+            close(fd);
+        }
+        else if (strcmp(args[i], "<") == 0)
+        {
+            // Check if there's an output redirection after input redirection
+            if (args[i + 2] != NULL && strcmp(args[i + 2], ">") == 0)
+            {
+                if (args[i + 3] == NULL)
+                {
+                    fprintf(stderr, "Missing output file after '>'.\n");
+                    return 0;
+                }
+
+                // Open the input file
+                int fd_in = open(args[i + 1], O_RDONLY);
+                if (fd_in < 0)
+                {
+                    perror("Error opening input file");
+                    exit(1);
+                }
+
+                // Open the output file
+                int fd_out = open(args[i + 3], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                if (fd_out < 0)
+                {
+                    perror("Error opening output file");
+                    exit(1);
+                }
+
+                // Redirect input and output
+                dup2(fd_in, STDIN_FILENO);
+                dup2(fd_out, STDOUT_FILENO);
+
+                // Close the file descriptors
+                close(fd_in);
+                close(fd_out);
+
+                // Nullify the redirection symbols and filenames in args
+                args[i] = NULL;
+            }
+            else
+            {
+                // Handle only input redirection
+                if (args[i + 1] == NULL)
+                {
+                    fprintf(stderr, "Missing input file after '<'.\n");
+                    return 0;
+                }
+
+                // Open the input file
+                int fd_in = open(args[i + 1], O_RDONLY);
+                if (fd_in < 0)
+                {
+                    perror("Error opening input file");
+                    exit(1);
+                }
+
+                // Redirect input
+                dup2(fd_in, STDIN_FILENO);
+                close(fd_in);
+
+                // Nullify the redirection symbols and filenames in args
+                args[i] = NULL;
+            }
+        }
+        char fullPath[MAX_LINE] = {0};
+        findCommandPath(args[0], fullPath);
+
+        if (execv(fullPath, args) == -1)
+        {
+            perror("Command execution failed");
+            exit(1);
+        }
+    }
+    else
+    {
+        if (!background)
+        {
+            waitpid(pid, NULL, 0);
+        }
+    }
+    return 1;
 }
