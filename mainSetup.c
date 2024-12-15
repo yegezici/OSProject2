@@ -17,6 +17,7 @@ pid_t fg_pid = -1;
 pid_t bgProcesses[MAX_BG_PROCESSES];
 int bgCount = 0;
 
+void handleSigCHLD(int sig);
 void handleSigTSTP(int sig);
 void setup(char inputBuffer[], char *args[], int *background);
 void findCommandPath(const char *command, char *fullPath);
@@ -31,6 +32,7 @@ int redirect(char *args[], int background);
 int main(void)
 {
     signal(SIGTSTP, handleSigTSTP);
+    signal(SIGCHLD, handleSigCHLD);
     char inputBuffer[MAX_LINE];
     char historyBuffer[MAX_HISTORY][MAX_LINE] = {0};
     int background;
@@ -194,7 +196,9 @@ int main(void)
             }
             else
             {
+                fg_pid = pid;
                 waitpid(pid, NULL, 0);
+                fg_pid = -1;
             }
         }
     }
@@ -720,4 +724,25 @@ int redirect(char *args[], int background)
         }
     }
     return 1;
+}
+void handleSigCHLD(int sig)
+{
+    pid_t pid;
+    int status;
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
+    {
+        // Remove the terminated process from bgProcesses
+        for (int i = 0; i < bgCount; i++)
+        {
+            if (bgProcesses[i] == pid)
+            {
+                for (int j = i; j < bgCount - 1; j++)
+                {
+                    bgProcesses[j] = bgProcesses[j + 1];
+                }
+                bgCount--;
+                break;
+            }
+        }
+    }
 }
