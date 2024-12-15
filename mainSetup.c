@@ -77,6 +77,7 @@ int main(void)
         // Handle history command
         if (strcmp(args[0], "history") == 0)
         {
+
             if (args[1] == NULL)
             {
                 // Print history
@@ -84,13 +85,13 @@ int main(void)
             }
             else
             {
-                if (args[1][0] != '-')
+                if (args[1][0] != '-' || args[1][1] != 'i')
                 {
-                    printf("\"-\" must be entered before the index.\n");
+                    printf("\"-i\" must be entered before the index.\n");
                     continue;
                 }
                 // Try to parse the index from args[1]
-                int historyIndex = args[1][1] - '0';
+                int historyIndex = args[2][0] - '0';
 
                 // Validate index range
                 if (historyIndex >= 0 && historyIndex < MAX_HISTORY)
