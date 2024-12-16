@@ -95,7 +95,7 @@ int main(void)
             {
                 if (args[1][0] != '-' || args[1][1] != 'i')
                 {
-                    fprintf(stderr,"\"-i\" must be entered before the index.\n");
+                    fprintf(stderr, "\"-i\" must be entered before the index.\n");
                     continue;
                 }
                 // Try to parse the index from args[1]
@@ -115,12 +115,12 @@ int main(void)
                     }
                     else
                     {
-                        fprintf(stderr,"Error: No such history entry.\n");
+                        fprintf(stderr, "Error: No such history entry.\n");
                     }
                 }
                 else
                 {
-                    fprintf(stderr,"Error: Invalid history index.\n");
+                    fprintf(stderr, "Error: Invalid history index.\n");
                 }
             }
             continue;
@@ -162,7 +162,7 @@ int main(void)
         pid_t pid = fork();
         if (pid < 0)
         {
-            fprintf(stderr,"Fork failed");
+            fprintf(stderr, "Fork failed");
             continue;
         }
 
@@ -180,7 +180,7 @@ int main(void)
 
             if (execv(fullPath, args) == -1)
             {
-                fprintf(stderr,"Command execution failed");
+                fprintf(stderr, "Command execution failed");
                 exit(1);
             }
         }
@@ -196,7 +196,7 @@ int main(void)
                 }
                 else
                 {
-                    fprintf(stderr,"Maximum background processes reached.\n");
+                    fprintf(stderr, "Maximum background processes reached.\n");
                 }
             }
             else
@@ -221,7 +221,7 @@ void setup(char inputBuffer[], char *args[], int *background)
         exit(0); // End of user input (Ctrl+D)
     if (length < 0 && errno != EINTR)
     {
-        fprintf(stderr,"Error reading the command");
+        fprintf(stderr, "Error reading the command");
         exit(-1);
     }
 
@@ -262,7 +262,7 @@ void findCommandPath(const char *command, char *fullPath)
     char *pathEnv = getenv("PATH");
     if (!pathEnv)
     {
-        fprintf(stderr,"PATH environment variable not found");
+        fprintf(stderr, "PATH environment variable not found");
         exit(1);
     }
 
@@ -326,7 +326,7 @@ void executeFromHistory(char *historyLine, char *args[])
     // If no valid command, return
     if (args[0] == NULL)
     {
-        fprintf(stderr,"Error: Invalid command in history.\n");
+        fprintf(stderr, "Error: Invalid command in history.\n");
         return;
     }
     int hasPipe = 0;
@@ -354,7 +354,7 @@ void executeFromHistory(char *historyLine, char *args[])
     pid_t pid = fork();
     if (pid < 0)
     {
-        fprintf(stderr,"Fork failed");
+        fprintf(stderr, "Fork failed");
         return;
     }
 
@@ -372,7 +372,7 @@ void executeFromHistory(char *historyLine, char *args[])
 
         if (execv(fullPath, args) == -1)
         {
-            fprintf(stderr,"Command execution failed");
+            fprintf(stderr, "Command execution failed");
             exit(1);
         }
     }
@@ -463,7 +463,6 @@ void moveToForeground(pid_t pid, pid_t bgProcesses[MAX_BG_PROCESSES], int *bgCou
 
 void executePipedCommands(char *args[], char *inputBuffer)
 {
-
     int pipefd[2];
     pid_t pid1, pid2;
 
@@ -502,7 +501,7 @@ void executePipedCommands(char *args[], char *inputBuffer)
 
     if (pipe(pipefd) == -1)
     {
-        fprintf(stderr,"Pipe creation failed");
+        fprintf(stderr, "Pipe creation failed");
         return;
     }
 
@@ -524,7 +523,7 @@ void executePipedCommands(char *args[], char *inputBuffer)
 
         if (execv(fullPath, cmd1) == -1)
         {
-            fprintf(stderr,"Command execution failed");
+            fprintf(stderr, "Command execution failed");
             exit(1);
         }
     }
@@ -537,6 +536,50 @@ void executePipedCommands(char *args[], char *inputBuffer)
         dup2(pipefd[0], STDIN_FILENO); // Redirect stdin to pipe read end
         close(pipefd[0]);
 
+        // Handle redirection in the second command
+        for (int i = 0; cmd2[i] != NULL; i++)
+        {
+            if (strcmp(cmd2[i], ">") == 0)
+            {
+                int fd = open(cmd2[i + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                if (fd < 0)
+                {
+                    fprintf(stderr, "Error opening file");
+                    exit(1);
+                }
+                dup2(fd, STDOUT_FILENO);
+                close(fd);
+                cmd2[i] = NULL;
+                break;
+            }
+            else if (strcmp(cmd2[i], ">>") == 0)
+            {
+                int fd = open(cmd2[i + 1], O_WRONLY | O_CREAT | O_APPEND, 0644);
+                if (fd < 0)
+                {
+                    fprintf(stderr, "Error opening file");
+                    exit(1);
+                }
+                dup2(fd, STDOUT_FILENO);
+                close(fd);
+                cmd2[i] = NULL;
+                break;
+            }
+            else if (strcmp(cmd2[i], "2>") == 0)
+            {
+                int fd = open(cmd2[i + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                if (fd < 0)
+                {
+                    fprintf(stderr, "Error opening file");
+                    exit(1);
+                }
+                dup2(fd, STDERR_FILENO);
+                close(fd);
+                cmd2[i] = NULL;
+                break;
+            }
+        }
+
         char fullPath[MAX_LINE] = {0};
         findCommandPath(cmd2[0], fullPath);
         if (fullPath[0] == '\0')
@@ -547,7 +590,7 @@ void executePipedCommands(char *args[], char *inputBuffer)
 
         if (execv(fullPath, cmd2) == -1)
         {
-            fprintf(stderr,"Command execution failed");
+            fprintf(stderr, "Command execution failed");
             exit(1);
         }
     }
@@ -568,7 +611,7 @@ void handleSigTSTP(int sig)
     }
     else
     {
-        fprintf(stderr,"\nNo foreground process to terminate.\n");
+        fprintf(stderr, "\nNo foreground process to terminate.\n");
         return;
     }
 }
@@ -579,13 +622,16 @@ void terminateProgram(int bgCount)
         printf("There are still background processes running!\n");
         return;
     }
+    /*else if (fg_pid != -1)
+    {
+
+        printf("Terminating foreground process %d...\n", fg_pid);
+        signal(SIGTSTP, handleSigTSTP);
+
+        kill(fg_pid, SIGKILL);
+    }*/
     else
     {
-        if (fg_pid != -1)
-        {
-            printf("Terminating foreground process %d...\n", fg_pid);
-            kill(fg_pid, SIGKILL);
-        }
         printf("Exiting shell...\n");
         exit(0);
     }
@@ -640,7 +686,7 @@ int redirect(char *args[], int background)
             int fd = open(args[i + 1], O_WRONLY | O_TRUNC | O_CREAT, 0644);
             if (fd < 0)
             {
-                fprintf(stderr,"Error opening file");
+                fprintf(stderr, "Error opening file");
                 exit(1);
             }
             args[i] = NULL;
@@ -652,7 +698,7 @@ int redirect(char *args[], int background)
             int fd = open(args[i + 1], O_WRONLY | O_APPEND | O_CREAT, 0644);
             if (fd < 0)
             {
-                fprintf(stderr,"Error opening file");
+                fprintf(stderr, "Error opening file");
                 exit(1);
             }
             args[i] = NULL;
@@ -664,7 +710,7 @@ int redirect(char *args[], int background)
             int fd = open(args[i + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
             if (fd < 0)
             {
-                fprintf(stderr,"Error opening file");
+                fprintf(stderr, "Error opening file");
                 exit(1);
             }
             args[i] = NULL;
@@ -686,7 +732,7 @@ int redirect(char *args[], int background)
                 int fd_in = open(args[i + 1], O_RDONLY);
                 if (fd_in < 0)
                 {
-                    fprintf(stderr,"Error opening input file");
+                    fprintf(stderr, "Error opening input file");
                     exit(1);
                 }
 
@@ -694,7 +740,7 @@ int redirect(char *args[], int background)
                 int fd_out = open(args[i + 3], O_WRONLY | O_CREAT | O_TRUNC, 0644);
                 if (fd_out < 0)
                 {
-                    fprintf(stderr,"Error opening output file");
+                    fprintf(stderr, "Error opening output file");
                     exit(1);
                 }
 
@@ -722,7 +768,7 @@ int redirect(char *args[], int background)
                 int fd_in = open(args[i + 1], O_RDONLY);
                 if (fd_in < 0)
                 {
-                    fprintf(stderr,"Error opening input file");
+                    fprintf(stderr, "Error opening input file");
                     exit(1);
                 }
 
@@ -739,7 +785,7 @@ int redirect(char *args[], int background)
 
         if (execv(fullPath, args) == -1)
         {
-            fprintf(stderr,"Command execution failed");
+            fprintf(stderr, "Command execution failed");
             exit(1);
         }
     }
