@@ -1,56 +1,61 @@
-#include <stdio.h>
-#include <unistd.h>
-#include <errno.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <signal.h>
+#include <stdio.h>     // Standard I/O library functions
+#include <unistd.h>    // UNIX standard function definitions
+#include <errno.h>     // Error number definitions
+#include <stdlib.h>    // Standard library definitions
+#include <string.h>    // String operation functions
+#include <sys/types.h> // Data types
+#include <sys/wait.h>  // Declarations for waiting
+#include <fcntl.h>     // File control options
+#include <sys/stat.h>  // Data returned by the stat() function
+#include <signal.h>    // Signal handling functions
 
-#define MAX_LINE 80 /* 80 chars per line, per command, should be enough. */
-#define MAX_HISTORY 10
-#define MAX_BG_PROCESSES 20
+#define MAX_LINE 128        /* Maximum characters per command line */
+#define MAX_ARGS 32         /*Maximum different characters per command line*/
+#define MAX_HISTORY 10      /* Maximum number of commands in history */
+#define MAX_BG_PROCESSES 20 /* Maximum background processes allowed */
 
-pid_t fg_pid = -1;
-pid_t bgProcesses[MAX_BG_PROCESSES];
-int bgCount = 0;
+/* Global variables */
+pid_t fg_pid = -1;                   // Foreground process ID
+pid_t bgProcesses[MAX_BG_PROCESSES]; // Array of background process IDs
+int bgCount = 0;                     // Count of background processes
 
-void handleSigTSTP(int sig);
-void handleSigCHLD(int sig);
-void setup(char inputBuffer[], char *args[], int *background);
-void findCommandPath(const char *command, char *fullPath);
-void executeFromHistory(char *historyLine, char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE]);
-void addToHistory(char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE], int background);
-void printHistory(char historyBuffer[MAX_HISTORY][MAX_LINE]);
-void moveToForeground(pid_t pid, pid_t bgProcesses[MAX_BG_PROCESSES], int *bgCount);
-void executePipedCommands(char *args[], char *inputBuffer);
-void terminateProgram(int bgCount);
-int redirect(char *args[], int background);
-void terminateAllBackgroundProcesses();
+/* Function prototypes */
+void handleSigTSTP(int sig);                                                                         // Handler for SIGTSTP (Ctrl+Z)
+void handleSigCHLD(int sig);                                                                         // Handler for SIGCHLD (child termination)
+void setup(char inputBuffer[], char *args[], int *background);                                       // Parses input
+void findCommandPath(const char *command, char *fullPath);                                           // Finds command path
+void executeFromHistory(char *historyLine, char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE]); // Executes history command
+void addToHistory(char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE], int background);          // Adds command to history
+void printHistory(char historyBuffer[MAX_HISTORY][MAX_LINE]);                                        // Prints command history
+void moveToForeground(pid_t pid, pid_t bgProcesses[MAX_BG_PROCESSES], int *bgCount);                 // Brings BG process to FG
+void executePipedCommands(char *args[], char *inputBuffer);                                          // Executes piped commands
+void terminateProgram(int bgCount);                                                                  // Exits the shell
+int redirect(char *args[], int background);                                                          // Handles I/O redirection
 
 int main(void)
 {
-    signal(SIGTSTP, handleSigTSTP);
-    signal(SIGCHLD, handleSigCHLD);
-    char inputBuffer[MAX_LINE];
-    char historyBuffer[MAX_HISTORY][MAX_LINE] = {0};
-    int background;
-    char *args[MAX_LINE / 2 + 1];
+    /* Set up signal handlers */
+    signal(SIGTSTP, handleSigTSTP); // Handle Ctrl+Z
+    signal(SIGCHLD, handleSigCHLD); // Handle child termination
+
+    char inputBuffer[MAX_LINE];                      // Buffer to hold input
+    char historyBuffer[MAX_HISTORY][MAX_LINE] = {0}; // Command history
+    int background;                                  // Background execution flag
+    char *args[MAX_LINE / 2 + 1];                    // Command arguments
 
     while (1)
     {
-
+        /* Display prompt */
         printf("myshell: ");
         fflush(stdout);
 
+        /* Parse input */
         setup(inputBuffer, args, &background);
 
         if (args[0] == NULL)
             continue; // Ignore empty input
 
-        // Pipe handling
+        /* Check for pipes */
         int hasPipe = 0;
         for (int i = 0; args[i] != NULL; i++)
         {
@@ -63,33 +68,32 @@ int main(void)
 
         if (hasPipe)
         {
+            /* Handle piped commands */
             addToHistory(args, historyBuffer, background);
             executePipedCommands(args, inputBuffer);
             continue;
         }
+
+        /* Check for I/O redirection */
         if (redirect(args, background))
         {
             addToHistory(args, historyBuffer, background);
             continue;
         }
+
+        /* Built-in commands */
         if (strcmp(args[0], "exit") == 0)
         {
-            terminateProgram(bgCount);
+            terminateProgram(bgCount); // Exit shell
             continue;
         }
-        if (strcmp(args[0], "terminate_bg") == 0)
-        {
-            terminateAllBackgroundProcesses();
-            continue;
-        }
-        // Handle history command
+
         if (strcmp(args[0], "history") == 0)
         {
-
+            /* Handle history command */
             if (args[1] == NULL)
             {
-                // Print history
-                printHistory(historyBuffer);
+                printHistory(historyBuffer); // Print history
             }
             else
             {
@@ -98,20 +102,15 @@ int main(void)
                     fprintf(stderr, "\"-i\" must be entered before the index.\n");
                     continue;
                 }
-                // Try to parse the index from args[1]
-                int historyIndex = atoi(args[2]);
-
-                // Validate index range
+                int historyIndex = atoi(args[2]); // Get history index
                 if (historyIndex >= 0 && historyIndex < MAX_HISTORY)
                 {
-                    if (historyBuffer[historyIndex][0] != '\0') // Check if the history entry is valid
+                    if (historyBuffer[historyIndex][0] != '\0')
                     {
                         char historyLine[MAX_LINE];
-                        strncpy(historyLine, historyBuffer[historyIndex], MAX_LINE); // Copy the history command
-                        historyLine[MAX_LINE - 1] = '\0';                            // Null-terminate
-
-                        // Parse and execute the history command
-                        executeFromHistory(historyLine, args, historyBuffer);
+                        strncpy(historyLine, historyBuffer[historyIndex], MAX_LINE);
+                        historyLine[MAX_LINE - 1] = '\0';
+                        executeFromHistory(historyLine, args, historyBuffer); // Execute history command
                     }
                     else
                     {
@@ -126,26 +125,25 @@ int main(void)
             continue;
         }
 
-        // Handle fg command
         if (strcmp(args[0], "fg") == 0)
         {
+            /* Bring background process to foreground */
             if (args[1] != NULL)
             {
-                if (args[1][0] != '%')
+                if (args[1][0] != '%') /* Check syntax usage */
                 {
-                    fprintf(stderr, "USE fg WITH CORRECT SYNTAX.\n");
+                    fprintf(stderr, "Use fg with correct syntax.\n");
                     continue;
                 }
-
                 char fgIndex[MAX_LINE];
                 int i;
                 for (i = 0; args[1][i] != '\0'; i++)
                 {
-                    fgIndex[i - 1] = args[1][i];
+                    fgIndex[i - 1] = args[1][i]; // Each character from args[1] is copied to fgIndex with an offset of -1
                 }
                 fgIndex[i - 1] = '\0';
-                pid_t pid = atoi(fgIndex);
-                moveToForeground(pid, bgProcesses, &bgCount);
+                pid_t pid = atoi(fgIndex);                    // Convert string fgIndex to integer
+                moveToForeground(pid, bgProcesses, &bgCount); // Move process to foreground
             }
             else
             {
@@ -154,11 +152,10 @@ int main(void)
             continue;
         }
 
-        // Add to history
-
+        /* Add command to history */
         addToHistory(args, historyBuffer, background);
 
-        // Execute command
+        /* Fork a child process */
         pid_t pid = fork();
         if (pid < 0)
         {
@@ -166,11 +163,11 @@ int main(void)
             continue;
         }
 
-        if (pid == 0)
+        if (pid == 0) // Only child process runs this block
         {
-            // Child process
+            /* Child process */
             char fullPath[MAX_LINE] = {0};
-            findCommandPath(args[0], fullPath);
+            findCommandPath(args[0], fullPath); // Find command path
 
             if (fullPath[0] == '\0')
             {
@@ -186,12 +183,13 @@ int main(void)
         }
         else
         {
-            // Parent process
+            /* Parent process */
             if (background)
             {
+                /* Run in background */
                 if (bgCount < MAX_BG_PROCESSES)
                 {
-                    bgProcesses[bgCount++] = pid;
+                    bgProcesses[bgCount++] = pid; // Store background process ID
                     printf("Process %d running in background\n", pid);
                 }
                 else
@@ -201,9 +199,10 @@ int main(void)
             }
             else
             {
-                fg_pid = pid;
-                waitpid(pid, NULL, 0);
-                fg_pid = -1;
+                /* Run in foreground */
+                fg_pid = pid;          // Set foreground process ID
+                waitpid(pid, NULL, 0); // Wait for child
+                fg_pid = -1;           // Reset foreground process ID
             }
         }
     }
@@ -211,20 +210,23 @@ int main(void)
     return 0;
 }
 
+/* Parses the input line and populates args[] with the parsed components */
 void setup(char inputBuffer[], char *args[], int *background)
 {
     int length, start = -1, ct = 0;
-    *background = 0;
+    *background = 0; // Initialize background flag to 0, foreground execution
 
+    /* Read input */
     length = read(STDIN_FILENO, inputBuffer, MAX_LINE);
     if (length == 0)
-        exit(0); // End of user input (Ctrl+D)
+        exit(0); // End of input (Ctrl+D)
     if (length < 0 && errno != EINTR)
     {
         fprintf(stderr, "Error reading the command");
         exit(-1);
     }
 
+    /* Parse inputBuffer */
     for (int i = 0; i < length; i++)
     {
         switch (inputBuffer[i])
@@ -233,8 +235,8 @@ void setup(char inputBuffer[], char *args[], int *background)
         case '\t':
             if (start != -1)
             {
-                args[ct++] = &inputBuffer[start];
-                inputBuffer[i] = '\0';
+                args[ct++] = &inputBuffer[start]; // Add argument
+                inputBuffer[i] = '\0';            // Null-terminate
                 start = -1;
             }
             break;
@@ -244,48 +246,52 @@ void setup(char inputBuffer[], char *args[], int *background)
                 args[ct++] = &inputBuffer[start];
             }
             inputBuffer[i] = '\0';
-            args[ct] = NULL;
+            args[ct] = NULL; // Mark end of arguments
             break;
         case '&':
-            *background = 1;
+            *background = 1; // Background execution
             inputBuffer[i] = '\0';
             break;
         default:
             if (start == -1)
-                start = i;
+                start = i; // Start of new argument
         }
     }
-    args[ct] = NULL;
+
+    args[ct] = NULL; // Ensure args ends with NULL
 }
+
+/* Finds the full path of the command */
 void findCommandPath(const char *command, char *fullPath)
 {
-    char *pathEnv = getenv("PATH");
+    char *pathEnv = getenv("PATH"); // Retrieve PATH environment variable
     if (!pathEnv)
     {
         fprintf(stderr, "PATH environment variable not found");
         exit(1);
     }
 
-    char *path = strtok(pathEnv, ":");
+    char *path = strtok(pathEnv, ":"); // Split PATH by ':'
     while (path != NULL)
     {
-        snprintf(fullPath, MAX_LINE, "%s/%s", path, command);
-        if (access(fullPath, X_OK) == 0)
+        snprintf(fullPath, MAX_LINE, "%s/%s", path, command); // Constructs a potential full path for the command by combining the current directory path and the command name.
+        if (access(fullPath, X_OK) == 0)                      // X_OK flag checks if the file is executable
         {
-            return;
+            return; // Command found
         }
-        path = strtok(NULL, ":");
+        path = strtok(NULL, ":"); // Moves to next directory path
     }
 
     fullPath[0] = '\0'; // Command not found
 }
+
+/* Executes a command from history */
 void executeFromHistory(char *historyLine, char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE])
 {
-
     int background = 0;
     int ct = 0, start = -1;
 
-    // Parse the historyLine into arguments
+    /* Parse historyLine */
     int i;
     for (i = 0; historyLine[i] != '\0'; i++)
     {
@@ -296,41 +302,31 @@ void executeFromHistory(char *historyLine, char *args[], char historyBuffer[MAX_
             if (start != -1)
             {
                 args[ct++] = &historyLine[start];
-                historyLine[i] = '\0'; // Null-terminate the argument
+                historyLine[i] = '\0'; // Null-terminate
                 start = -1;
             }
             break;
-        case '\n':
-            if (start != -1)
-            {
-                args[ct++] = &historyLine[start];
-            }
-            historyLine[i] = '\0'; // Null-terminate the argument
-            args[ct] = NULL;       // Mark the end of the argument list
-            break;
         case '&':
             background = 1;
-            historyLine[i] = '\0'; // Remove '&' from inputBuffer
+            historyLine[i] = '\0'; 
             break;
         default:
-
             if (start == -1)
                 start = i;
         }
     }
 
-    // Ensure the last argument is null-terminated
+    /* Ensure args ends with NULL */
     if (args[ct] != NULL)
         args[ct] = NULL;
 
-    // If no valid command, return
     if (args[0] == NULL)
     {
         fprintf(stderr, "Error: Invalid command in history.\n");
         return;
     }
-    addToHistory(args, historyBuffer, background);
 
+    addToHistory(args, historyBuffer, background); // Add to history
 
     int hasPipe = 0;
     for (int i = 0; args[i] != NULL; i++)
@@ -347,13 +343,12 @@ void executeFromHistory(char *historyLine, char *args[], char historyBuffer[MAX_
         executePipedCommands(args, historyLine);
         return;
     }
-    // If index has a I/O operation
     if (redirect(args, background))
     {
         return;
     }
 
-    // Fork and execute the command from history
+    /* Fork and execute */
     pid_t pid = fork();
     if (pid < 0)
     {
@@ -363,7 +358,7 @@ void executeFromHistory(char *historyLine, char *args[], char historyBuffer[MAX_
 
     if (pid == 0)
     {
-        // Child process
+        /* Child process */
         char fullPath[MAX_LINE] = {0};
         findCommandPath(args[0], fullPath);
 
@@ -381,28 +376,27 @@ void executeFromHistory(char *historyLine, char *args[], char historyBuffer[MAX_
     }
     else
     {
-        // Parent process
+        /* Parent process */
         if (background)
         {
-            // Background execution
             bgProcesses[bgCount++] = pid;
             printf("Process %d running in background\n", pid);
         }
         else
         {
             fg_pid = pid;
-            waitpid(pid, NULL, 0); // Wait for the command to complete
+            waitpid(pid, NULL, 0); // Wait for child
             fg_pid = -1;
         }
     }
 }
 
+/* Adds a command to the history buffer */
 void addToHistory(char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE], int background)
 {
     char inputBuffer[MAX_LINE] = {0};
-    int index = 0;
 
-    // Reconstruct the full command from args[]
+    /* Reconstruct the command */
     for (int i = 0; args[i] != NULL; i++)
     {
         strcat(inputBuffer, args[i]);
@@ -416,16 +410,17 @@ void addToHistory(char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE], int b
         strcat(inputBuffer, " &");
     }
 
-    // Shift history to make space for the new command
+    /* Shift history */
     for (int i = MAX_HISTORY - 1; i > 0; i--)
     {
         strncpy(historyBuffer[i], historyBuffer[i - 1], MAX_LINE);
     }
 
-    // Store the reconstructed command in historyBuffer
+    /* Add new command */
     strncpy(historyBuffer[0], inputBuffer, MAX_LINE);
 }
 
+/* Prints the command history */
 void printHistory(char historyBuffer[MAX_HISTORY][MAX_LINE])
 {
     for (int i = 0; i < MAX_HISTORY; i++)
@@ -437,6 +432,7 @@ void printHistory(char historyBuffer[MAX_HISTORY][MAX_LINE])
     }
 }
 
+/* Brings a background process to the foreground */
 void moveToForeground(pid_t pid, pid_t bgProcesses[MAX_BG_PROCESSES], int *bgCount)
 {
     int found = 0;
@@ -445,9 +441,10 @@ void moveToForeground(pid_t pid, pid_t bgProcesses[MAX_BG_PROCESSES], int *bgCou
         if (bgProcesses[i] == pid)
         {
             found = 1;
-            fg_pid = pid;                  // Set the foreground process ID
-            waitpid(pid, NULL, WUNTRACED); // Wait for it to finish or be stopped
-            fg_pid = -1;                   // Reset the foreground process ID
+            fg_pid = pid;                  // Set as foreground process
+            waitpid(pid, NULL, WUNTRACED); // Wait for process
+            fg_pid = -1;
+            /* Remove from background processes */
             for (int j = i; j < *bgCount - 1; j++)
             {
                 bgProcesses[j] = bgProcesses[j + 1];
@@ -462,12 +459,13 @@ void moveToForeground(pid_t pid, pid_t bgProcesses[MAX_BG_PROCESSES], int *bgCou
     }
 }
 
+/* Executes piped commands */
 void executePipedCommands(char *args[], char *inputBuffer)
 {
     int pipefd[2];
     pid_t pid1, pid2;
 
-    // Parse input into two commands
+    /* Split commands at pipe */
     char *cmd1[MAX_LINE / 2 + 1];
     char *cmd2[MAX_LINE / 2 + 1];
     int cmd1_len = 0, cmd2_len = 0;
@@ -487,13 +485,13 @@ void executePipedCommands(char *args[], char *inputBuffer)
         fprintf(stderr, "Error: No pipe found in command.\n");
         return;
     }
-
+    // Each element of args up to pipeIndex is copied into the cmd1 array.
     for (int i = 0; i < pipeIndex; i++)
     {
         cmd1[cmd1_len++] = args[i];
     }
     cmd1[cmd1_len] = NULL;
-
+    // Each element of args after pipeIndex is copied into the cmd2 array.
     for (int i = pipeIndex + 1; args[i] != NULL; i++)
     {
         cmd2[cmd2_len++] = args[i];
@@ -509,10 +507,10 @@ void executePipedCommands(char *args[], char *inputBuffer)
     pid1 = fork();
     if (pid1 == 0)
     {
-        // First child: Executes cmd1, writes output to pipe
-        close(pipefd[0]);               // Close unused read end
-        dup2(pipefd[1], STDOUT_FILENO); // Redirect stdout to pipe write end
-        close(pipefd[1]);
+        /* First child process */
+        close(pipefd[0]);               // Close read end of the pipe (not used)
+        dup2(pipefd[1], STDOUT_FILENO); // Redirect stdout to child process to the pipe
+        close(pipefd[1]);               // Close write end of the pipe
 
         char fullPath[MAX_LINE] = {0};
         findCommandPath(cmd1[0], fullPath);
@@ -532,50 +530,50 @@ void executePipedCommands(char *args[], char *inputBuffer)
     pid2 = fork();
     if (pid2 == 0)
     {
-        // Second child: Reads from pipe, executes cmd2
-        close(pipefd[1]);              // Close unused write end
-        dup2(pipefd[0], STDIN_FILENO); // Redirect stdin to pipe read end
-        close(pipefd[0]);
+        /* Second child */
+        close(pipefd[1]);              // Close write end of the pipe (not used)
+        dup2(pipefd[0], STDIN_FILENO); // Redirect stdin to child process from the pipe
+        close(pipefd[0]);              // Close read end of the pipe
 
-        // Handle redirection in the second command
+        /* Handle redirection in cmd2 */
         for (int i = 0; cmd2[i] != NULL; i++)
         {
             if (strcmp(cmd2[i], ">") == 0)
             {
-                int fd = open(cmd2[i + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                int fd = open(cmd2[i + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644); // Open file, create if not exists, truncate
                 if (fd < 0)
                 {
                     fprintf(stderr, "Error opening file");
                     exit(1);
                 }
-                dup2(fd, STDOUT_FILENO);
-                close(fd);
+                dup2(fd, STDOUT_FILENO); // Redirect stdout to file
+                close(fd);               // Close file descriptor
                 cmd2[i] = NULL;
                 break;
             }
             else if (strcmp(cmd2[i], ">>") == 0)
             {
-                int fd = open(cmd2[i + 1], O_WRONLY | O_CREAT | O_APPEND, 0644);
+                int fd = open(cmd2[i + 1], O_WRONLY | O_CREAT | O_APPEND, 0644); // Open file, create if not exists, append
                 if (fd < 0)
                 {
                     fprintf(stderr, "Error opening file");
                     exit(1);
                 }
-                dup2(fd, STDOUT_FILENO);
-                close(fd);
+                dup2(fd, STDOUT_FILENO); // Redirect stdout to file
+                close(fd);               // Close file descriptor
                 cmd2[i] = NULL;
                 break;
             }
             else if (strcmp(cmd2[i], "2>") == 0)
             {
-                int fd = open(cmd2[i + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                int fd = open(cmd2[i + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644); // Open file, create if not exists, truncate
                 if (fd < 0)
                 {
                     fprintf(stderr, "Error opening file");
                     exit(1);
                 }
-                dup2(fd, STDERR_FILENO);
-                close(fd);
+                dup2(fd, STDERR_FILENO); // Redirect stderr to file
+                close(fd);               // Close file descriptor
                 cmd2[i] = NULL;
                 break;
             }
@@ -596,19 +594,20 @@ void executePipedCommands(char *args[], char *inputBuffer)
         }
     }
 
-    // Parent process: Close both ends of the pipe and wait for children
-    close(pipefd[0]);
-    close(pipefd[1]);
-    waitpid(pid1, NULL, 0);
-    waitpid(pid2, NULL, 0);
+    /* Parent process */
+    close(pipefd[0]); // Close read end of the pipe
+    close(pipefd[1]); // Close write end of the pipe
+    waitpid(pid1, NULL, 0); // Wait for child 1
+    waitpid(pid2, NULL, 0); // Wait for child 2
 }
 
+/* Handles SIGTSTP (Ctrl+Z) */
 void handleSigTSTP(int sig)
 {
     if (fg_pid != -1)
     {
         printf("\nCaught SIGTSTP (Ctrl+Z). Terminating foreground process %d and its descendants.\n", fg_pid);
-        kill(fg_pid, SIGTERM); // Send SIGTERM to terminate the foreground process
+        kill(fg_pid, SIGTERM); // Terminate FG process
     }
     else
     {
@@ -616,6 +615,8 @@ void handleSigTSTP(int sig)
         return;
     }
 }
+
+/* Exits the shell */
 void terminateProgram(int bgCount)
 {
     if (bgCount != 0)
@@ -623,14 +624,6 @@ void terminateProgram(int bgCount)
         printf("There are still background processes running!\n");
         return;
     }
-    /*else if (fg_pid != -1)
-    {
-
-        printf("Terminating foreground process %d...\n", fg_pid);
-        signal(SIGTSTP, handleSigTSTP);
-
-        kill(fg_pid, SIGKILL);
-    }*/
     else
     {
         printf("Exiting shell...\n");
@@ -638,19 +631,9 @@ void terminateProgram(int bgCount)
     }
 }
 
-void terminateAllBackgroundProcesses()
-{
-    for (int i = 0; i < bgCount; i++)
-    {
-        printf("Terminating background process %d...\n", bgProcesses[i]);
-        kill(bgProcesses[i], SIGKILL);
-    }
-    bgCount = 0;
-}
-
+/* Handles I/O redirection */
 int redirect(char *args[], int background)
 {
-
     int i = 0;
     while (args[i] != NULL)
     {
@@ -664,7 +647,7 @@ int redirect(char *args[], int background)
 
     if (args[i] == NULL)
     {
-        return 0;
+        return 0; // No redirection
     }
 
     if (args[i + 1] == NULL)
@@ -682,102 +665,91 @@ int redirect(char *args[], int background)
 
     if (pid == 0)
     {
-        if (strcmp(">", args[i]) == 0)
+        /* Child process */
+        if (strcmp(">", args[i]) == 0) // 
         {
-            int fd = open(args[i + 1], O_WRONLY | O_TRUNC | O_CREAT, 0644);
+            /* Output redirection */
+            int fd = open(args[i + 1], O_WRONLY | O_TRUNC | O_CREAT, 0644); // Open file, create if not exists, truncate
             if (fd < 0)
             {
                 fprintf(stderr, "Error opening file");
                 exit(1);
             }
             args[i] = NULL;
-            dup2(fd, STDOUT_FILENO);
+            dup2(fd, STDOUT_FILENO); // Redirect stdout to file
             close(fd);
         }
         else if (strcmp(">>", args[i]) == 0)
         {
-            int fd = open(args[i + 1], O_WRONLY | O_APPEND | O_CREAT, 0644);
+            /* Append output redirection */
+            int fd = open(args[i + 1], O_WRONLY | O_APPEND | O_CREAT, 0644); // Open file, create if not exists, append
             if (fd < 0)
             {
                 fprintf(stderr, "Error opening file");
                 exit(1);
             }
             args[i] = NULL;
-            dup2(fd, STDOUT_FILENO);
+            dup2(fd, STDOUT_FILENO); // Redirect stdout to file
             close(fd);
         }
         else if (strcmp("2>", args[i]) == 0)
         {
-            int fd = open(args[i + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            /* Error redirection */
+            int fd = open(args[i + 1], O_WRONLY | O_CREAT | O_TRUNC, 0644); // Open file, create if not exists, truncate
             if (fd < 0)
             {
                 fprintf(stderr, "Error opening file");
                 exit(1);
             }
             args[i] = NULL;
-            dup2(fd, STDERR_FILENO);
+            dup2(fd, STDERR_FILENO); // Redirect stderr to file
             close(fd);
         }
         else if (strcmp(args[i], "<") == 0)
         {
-            // Check if there's an output redirection after input redirection
+            /* Input redirection */
             if (args[i + 2] != NULL && strcmp(args[i + 2], ">") == 0)
             {
+                /* Handle input and output redirection */
                 if (args[i + 3] == NULL)
                 {
                     fprintf(stderr, "Missing output file after '>'.\n");
                     return 0;
                 }
-
-                // Open the input file
                 int fd_in = open(args[i + 1], O_RDONLY);
                 if (fd_in < 0)
                 {
                     fprintf(stderr, "Error opening input file");
                     exit(1);
                 }
-
-                // Open the output file
-                int fd_out = open(args[i + 3], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                int fd_out = open(args[i + 3], O_WRONLY | O_CREAT | O_TRUNC, 0644); // Open output file
                 if (fd_out < 0)
                 {
                     fprintf(stderr, "Error opening output file");
                     exit(1);
                 }
-
-                // Redirect input and output
-                dup2(fd_in, STDIN_FILENO);
-                dup2(fd_out, STDOUT_FILENO);
-
-                // Close the file descriptors
+                dup2(fd_in, STDIN_FILENO); // Redirect stdin to input file
+                dup2(fd_out, STDOUT_FILENO); // Redirect stdout to output file
                 close(fd_in);
                 close(fd_out);
-
-                // Nullify the redirection symbols and filenames in args
                 args[i] = NULL;
             }
             else
             {
-                // Handle only input redirection
+                /* Only input redirection */
                 if (args[i + 1] == NULL)
                 {
                     fprintf(stderr, "Missing input file after '<'.\n");
                     return 0;
                 }
-
-                // Open the input file
-                int fd_in = open(args[i + 1], O_RDONLY);
+                int fd_in = open(args[i + 1], O_RDONLY); // Open input file
                 if (fd_in < 0)
                 {
                     fprintf(stderr, "Error opening input file");
                     exit(1);
                 }
-
-                // Redirect input
-                dup2(fd_in, STDIN_FILENO);
+                dup2(fd_in, STDIN_FILENO); // Redirect stdin to input file
                 close(fd_in);
-
-                // Nullify the redirection symbols and filenames in args
                 args[i] = NULL;
             }
         }
@@ -792,6 +764,7 @@ int redirect(char *args[], int background)
     }
     else
     {
+        /* Parent process */
         if (!background)
         {
             waitpid(pid, NULL, 0);
@@ -799,13 +772,16 @@ int redirect(char *args[], int background)
     }
     return 1;
 }
+
+/* Handles SIGCHLD (child termination) */
 void handleSigCHLD(int sig)
 {
     pid_t pid;
     int status;
-    while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) 
+    // WNOHANG: This flag tells waitpid or wait to return immediately if no child process has exited, rather than blocking the calling process.
     {
-        // Remove the terminated process from bgProcesses
+        /* Remove terminated process from background processes */
         for (int i = 0; i < bgCount; i++)
         {
             if (bgProcesses[i] == pid)
