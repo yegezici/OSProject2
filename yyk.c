@@ -21,7 +21,7 @@ void handleSigTSTP(int sig);
 void handleSigCHLD(int sig);
 void setup(char inputBuffer[], char *args[], int *background);
 void findCommandPath(const char *command, char *fullPath);
-void executeFromHistory(char *historyLine, char *args[]);
+void executeFromHistory(char *historyLine, char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE]);
 void addToHistory(char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE], int background);
 void printHistory(char historyBuffer[MAX_HISTORY][MAX_LINE]);
 void moveToForeground(pid_t pid, pid_t bgProcesses[MAX_BG_PROCESSES], int *bgCount);
@@ -99,7 +99,7 @@ int main(void)
                     continue;
                 }
                 // Try to parse the index from args[1]
-                int historyIndex = args[2][0] - '0';
+                int historyIndex = atoi(args[2]);
 
                 // Validate index range
                 if (historyIndex >= 0 && historyIndex < MAX_HISTORY)
@@ -111,7 +111,7 @@ int main(void)
                         historyLine[MAX_LINE - 1] = '\0';                            // Null-terminate
 
                         // Parse and execute the history command
-                        executeFromHistory(historyLine, args);
+                        executeFromHistory(historyLine, args, historyBuffer);
                     }
                     else
                     {
@@ -279,7 +279,7 @@ void findCommandPath(const char *command, char *fullPath)
 
     fullPath[0] = '\0'; // Command not found
 }
-void executeFromHistory(char *historyLine, char *args[])
+void executeFromHistory(char *historyLine, char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE])
 {
 
     int background = 0;
@@ -329,6 +329,9 @@ void executeFromHistory(char *historyLine, char *args[])
         fprintf(stderr, "Error: Invalid command in history.\n");
         return;
     }
+    addToHistory(args, historyBuffer, background);
+
+
     int hasPipe = 0;
     for (int i = 0; args[i] != NULL; i++)
     {
@@ -402,19 +405,17 @@ void addToHistory(char *args[], char historyBuffer[MAX_HISTORY][MAX_LINE], int b
     // Reconstruct the full command from args[]
     for (int i = 0; args[i] != NULL; i++)
     {
-        // Add the argument to inputBuffer
         strcat(inputBuffer, args[i]);
-
-        // Add a space between arguments
-        if (args[i] != NULL)
+        if (args[i + 1] != NULL)
         {
             strcat(inputBuffer, " ");
         }
     }
     if (background)
     {
-        strcat(inputBuffer, "& ");
+        strcat(inputBuffer, " &");
     }
+
     // Shift history to make space for the new command
     for (int i = MAX_HISTORY - 1; i > 0; i--)
     {
